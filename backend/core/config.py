@@ -298,6 +298,16 @@ class Settings(BaseSettings):
         return self.data_dir / "attachments"
 
     @property
+    def webimg_cache_dir(self) -> Path:
+        """站外图片的磁盘缓存（见 `backend/services/webimg.py`）。
+
+        为什么单独一层 `cache/`：它是**可随时删掉**的物化产物（删了只是下次重抓），
+        与 papers/ attachments/ 那种"删了就丢数据"的目录必须在名字上就分开。
+        容量由 `webimg.prune()` 兜（默认 500 MB，按 mtime 淘汰）。
+        """
+        return self.data_dir / "cache" / "webimg"
+
+    @property
     def database_url(self) -> str:
         if self.db_backend == "sqlite":
             return f"sqlite:///{(self.data_dir / 'papermind.sqlite3').as_posix()}"

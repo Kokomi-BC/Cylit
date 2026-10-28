@@ -20,6 +20,7 @@ from typing import Iterable
 from backend.agent.cite_groups import parse_bracket_marks
 from backend.agent.citations import RefRegistry
 from backend.core.logging import get_logger
+from backend.services.webimg import proxy_path
 
 log = get_logger(__name__)
 
@@ -111,13 +112,26 @@ def referenced_citations(text: str, registry: RefRegistry) -> list:
 
 
 class StreamingAnswerSanitizer:
-    """流式清洗：累积原文 → 批量清洗 → 只推安全前缀。"""
+    """流式清洗：累积原文 → 批量清洗 → 只推安全前缀。
+
+    推给前端的文本（本类的 feed/flush 输出）与"最终答案"**故意不是同一份**：
+
+    - 流式：**成形的图片 markdown 就地换成 alt**（见 _collapse_images）。否则增量里会先
+      闪一段原始 URL（站外地址还顺带把第三方域名亮出来），等 done 到了才变成图；
+    - 最终答案：由 runtime 的 _finalize 走 strip_foreign_images，把站外 https 换成
+      /api/v1/webimg 代理地址，给出真正的图片。
+
+    所以"流式增量拼起来"与 done.answer 在**带图的回答上**不再逐字一致 —— 这是有意的
+    （图片在流式阶段本来就只有 alt 可言），别为了对齐再把它改回原样。
+    """
 
     def __init__(self, registry: RefRegistry, *, guard: int = GUARD_CHARS) -> None:
         self._registry = registry
         self._guard = guard
         self._raw = ""
         self._clean = ""
+        #: 真正推给前端的那一份（`_clean` 里的图片 markdown 已换成 alt）
+        self._shown = ""
         self._emitted = 0
         self._last_batch = 0
         #: 首批攒得少一点：攒 256 字才吐第一个字，用户会觉得"卡住了"。清洗本身很便宜，
@@ -144,29 +158,35 @@ class StreamingAnswerSanitizer:
         """
         self._raw = ""
         self._clean = ""
+        self._shown = ""
         self._emitted = 0
         self._last_batch = 0
         self._batch = 64
 
     def flush(self) -> str:
-        """回答结束：把剩下的（含被 guard 挡住的尾巴）全部推出。"""
+        """回答结束：把剩下的（含被 guard / 半个图片片段挡住的尾巴）全部推出。"""
         self._reclean()
-        tail = self._clean[self._emitted:]
-        self._emitted = len(self._clean)
+        tail = self._shown[self._emitted:]
+        self._emitted = len(self._shown)
         return tail
 
     # ---------------- 内部 ----------------
     def _reclean(self) -> None:
         self._clean = sanitize_answer_text(self._raw, self._registry)
+        # 显示文本：图片 markdown → alt（_clean 仍保留 markdown，最终答案要用）
+        self._shown = _collapse_images(self._clean)
         self._last_batch = len(self._raw)
         # 自适应攒批：回答越长，单次清洗越贵 → 拉大批次，避免 O(n²)
         self._batch = max(192, len(self._raw) // 8)
 
     def _drain(self) -> str:
-        safe_upto = max(0, len(self._clean) - self._guard)
+        safe_upto = max(0, len(self._shown) - self._guard)
+        # 尾部还没写完的图片 markdown 一律挡住：它一补齐就要缩回成 alt，
+        # 推出去的字收不回来（前缀只增不退是前端增量渲染的前提）。
+        safe_upto = min(safe_upto, _hold_from(self._shown))
         if safe_upto <= self._emitted:
             return ""
-        chunk = self._clean[self._emitted:safe_upto]
+        chunk = self._shown[self._emitted:safe_upto]
         self._emitted = safe_upto
         return chunk
 
@@ -178,6 +198,11 @@ class StreamingAnswerSanitizer:
     @property
     def clean(self) -> str:
         return sanitize_answer_text(self._raw, self._registry)
+
+    @property
+    def shown(self) -> str:
+        """流式路径真正会推出去的那份文本（图片 markdown 已换成 alt）。"""
+        return _collapse_images(sanitize_answer_text(self._raw, self._registry))
 
 
 def sanitize_many(texts: Iterable[str], registry: RefRegistry) -> list[str]:
@@ -239,6 +264,47 @@ def _domain_of(url: str) -> str:
     return rest.split("/", 1)[0].split("?", 1)[0]
 
 
+#: 流式期间没有 alt 时显示的占位词
+_IMAGE_FALLBACK_ALT = "图片"
+#: 图片 markdown 的开头（流式期间用来找"还没写完"的片段）
+_IMAGE_START = "!["
+
+
+def _collapse_images(text: str) -> str:
+    """流式专用：把**已经成形**的图片 markdown 换成它的 alt（没写 alt 就用「图片」）。
+
+    为什么流式要这么做：增量里原样推 markdown，前端会先闪出一段原始 URL（站外地址还
+    顺带把第三方域名亮给用户），等 done 到了才变成图。换成 alt 之后，流式期间看到的是
+    「Transformer 架构图」，收尾时 _finalize 再给出真正的图片。
+
+    **不完整的片段不动**：正则只认写到右括号的，半个片段原样留下（不替换也不丢字）。
+    """
+    def repl(match: "re.Match[str]") -> str:
+        alt = (match.group("alt") or "").strip()
+        return alt or _IMAGE_FALLBACK_ALT
+
+    return _IMAGE_RE.sub(repl, text or "")
+
+
+def _hold_from(text: str) -> int:
+    """尾部那个"还没写完的图片片段"的起点；没有就返回 len(text)（= 不用额外挡）。
+
+    挡它的理由：半个片段（`![alt](url`）先推出去之后，等它补齐成完整图片时就要缩回成
+    alt —— 推出去的字收不回来，前端会看到回跳。所以宁可晚推一个片段。
+    出现换行就认为它不可能再长成图片了（markdown 图片不跨行），原样放行。
+    """
+    end = 0
+    for match in _IMAGE_RE.finditer(text or ""):
+        end = match.end()
+    start = (text or "").find(_IMAGE_START, end)
+    if start < 0:
+        return len(text or "")
+    tail = (text or "")[start:]
+    if "\n" in tail or "\r" in tail:
+        return len(text or "")
+    return start
+
+
 def strip_foreign_images(text: str, paper_id: str) -> str:
     """清洗回答里的图片地址：**放行任意 https**，本站受控图规整成绝对路径。
 
@@ -249,7 +315,10 @@ def strip_foreign_images(text: str, paper_id: str) -> str:
        （带 ``/cylit`` 部署前缀、缺开头 ``/``、写成整条 ``https://…`` 的），不规整就加载不出来。
        与 2026-10-28 那次生产 bug 对应：当时白名单按**当前论文**拼前缀，于是模型引用它刚读过的
        另一篇（``attention-cleanroom``）的裁图被删成「（配图已省略：…）」。
-    ② 站外 ``https://…`` → **放行且原样保留**（不改写域名、不猜它到底是不是一张图）。
+    ② 站外 ``https://…``（含协议相对的 ``//host/x.png``）→ **改写成本站代理地址**
+       ``/api/v1/webimg?url=<percent-encoded>``（见 `services/webimg.py`）：由本站抓一次
+       落盘再由本站提供，浏览器不再直连第三方（否则 IP / referer 泄露给图片站，对方一挂
+       图就裂）。这一步**只拼字符串、不抓取** —— 真正抓取发生在浏览器来取图那一刻。
     ③ ``http://…`` → **降级成链接** ``[alt](url)``：https 站点上渲染 http 图必然是混合内容裂图，
        留个能点的链接比整条删掉更有用。
     ④ ``data:`` / ``blob:`` / ``javascript:`` / ``file:`` 以及其它非 http(s) scheme
@@ -267,9 +336,12 @@ def strip_foreign_images(text: str, paper_id: str) -> str:
         if _CONTROLLED_IMAGE_RE.match(path):
             return f"![{alt}]({path})"
         # ② 站外 https（含协议相对的 //host/x.png：在我们这种 https 站点上同样是 https）
+        #    改写成本站代理地址，浏览器不再直连第三方
         if scheme == "https" or (not scheme and raw.startswith("//")):
-            log.info("放行站外图片：domain=%s alt=%s", _domain_of(raw) or "-", alt[:40])
-            return f"![{alt}]({raw})"
+            absolute = raw if scheme == "https" else "https:" + raw
+            log.info("站外图片改走本站代理：domain=%s alt=%s",
+                     _domain_of(absolute) or "-", alt[:40])
+            return f"![{alt}]({proxy_path(absolute)})"
         # ③ http：降级成链接，不渲染成图
         if scheme == "http":
             log.info("回答里的图片是 http，降级成链接（https 站点上会混合内容裂图）："

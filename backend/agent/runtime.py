@@ -970,7 +970,8 @@ class AgentRuntime:
         citations = referenced_citations(text, deps.registry)
         # 图片过闸（用户口径 2026-12：**放行任意 https**，不再按"读过哪几篇"限制）：
         # 本站受控图（任意论文，含 /cylit 前缀、缺 / 的畸形写法）规整成绝对路径后放行；
-        # 站外 https 原样放行；http 降级成链接；data:/blob:/javascript:/file: 整条删掉。
+        # 站外 https **改写成 /api/v1/webimg?url=…**（落服务器磁盘缓存，浏览器不再直连第三方）；
+        # http 降级成链接；data:/blob:/javascript:/file: 整条删掉。
         # 2026-10-28 那次生产 bug（模型引用它刚读过的另一篇的裁图被删成占位）就是这条闸太窄造成的。
         text = strip_foreign_images(text, deps.paper_id)
         # 编号与改写**同一套规则**：一个标号 = 一处连续材料（见 cite_groups）。
