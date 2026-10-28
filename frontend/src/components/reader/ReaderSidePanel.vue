@@ -9,8 +9,9 @@
  * 整页版（`/understand/:paperId`）也复用同一套渲染与数据源。
  * ⚠️ 原「阅读地图」页签（B 路 + 概念卡）已随该功能一起删除。
  */
-import { computed, nextTick, onMounted, ref, watch, type CSSProperties } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type CSSProperties } from 'vue';
 import { mdToHtml } from '@/composables/useMarkdown';
+import { watchAnswerImages } from '@/utils/mdImages';
 import { askConfirm } from '@/stores/confirm';
 import { fmtRelative } from '@/utils/format';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
@@ -336,6 +337,16 @@ function fitFormulaQuotes() {
   });
 }
 onMounted(() => { void nextTick(fitFormulaQuotes); });
+
+/* 侧栏笔记卡里的图同样加固（笔记是用户自己写的，图片可能来自任何地方）：
+ * 挂在面板根上，v-for 换掉整批卡片时由 MutationObserver 接住，不逐条挂观察器。*/
+const panelEl = ref<HTMLElement | null>(null);
+let stopImgWatch: (() => void) | null = null;
+watch(panelEl, (el) => {
+  stopImgWatch?.();
+  stopImgWatch = watchAnswerImages(el, ['.md', '.clamp2']);
+});
+onUnmounted(() => stopImgWatch?.());
 const hasQuote = (r: FeedRow) => !!r.quote && !DOT_ONLY.test(r.quote);
 
 /** 正在编辑的那条（`key`）+ 草稿。保存成功后靠 `watch` 收起来（见下面）。 */
@@ -570,7 +581,7 @@ function onMore(key: string, r: FeedRow) {
 </script>
 
 <template>
-  <div class="panel-body">
+  <div class="panel-body" ref="panelEl">
     <!-- 论文解读：顶部只有「标题 + 一枚只有图标的按钮」（现在是把解读弹成浮窗，见 ReaderView）。 -->
     <InsightPanel
       v-if="props.tab === 'insight'"

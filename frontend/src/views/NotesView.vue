@@ -12,7 +12,7 @@
  * **还没写正文的高亮**当场新建 `POST /notes`（口径不变：笔记必须挂在一处高亮上）。
  */
 
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api/client';
 import type { Annotation, Highlight, Note } from '@/api/types';
@@ -28,6 +28,7 @@ import { readerTarget } from '@/utils/navigation';
 import { buildNotesFeed, type NotesFeedRow } from '@/utils/notesFeed';
 import { withKeptNoteRefs } from '@/utils/noteRefs';
 import { mdToHtml } from '@/composables/useMarkdown';
+import { watchAnswerImages } from '@/utils/mdImages';
 import Modal from '@/components/Modal.vue';
 import ConfirmModal from '@/components/ConfirmModal.vue';
 import Menu from '@/components/Menu.vue';
@@ -248,6 +249,17 @@ async function refreshAll(): Promise<void> {
   } catch { /* withLoading 已提示 */ }
 }
 
+/* 笔记预览里的图也要加固（站外图不再直连第三方、裂图降级成链接）。
+ * 挂在页面根上而不是每条笔记各挂一个：v-for 整批换掉时 MutationObserver 自己会接住。
+ * 选择器与回答区同一套（'.md' 覆盖正文预览，'.clamp2' 覆盖两行截断的卡片）。*/
+const pageEl = ref<HTMLElement | null>(null);
+let stopImgWatch: (() => void) | null = null;
+watch(pageEl, (el) => {
+  stopImgWatch?.();
+  stopImgWatch = watchAnswerImages(el, ['.md', '.clamp2']);
+});
+onUnmounted(() => stopImgWatch?.());
+
 onMounted(async () => {
   try { await loadPapers(); } catch { /* 论文缓存失败不阻塞本页 */ }
   await refreshAll();
@@ -383,7 +395,7 @@ function onRowAction(row: FeedRow, key: string) {
 </script>
 
 <template>
-  <div class="notes-page">
+  <div class="notes-page" ref="pageEl">
     <div class="page-head">
       <div>
         <h1>笔记</h1>

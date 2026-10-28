@@ -1961,17 +1961,21 @@ watch(msgsEl, (el) => {
   msgsMO.observe(el, { childList: true, subtree: true, characterData: true });
 });
 
-/** 回答里的**图片加固**（见 utils/mdImages.ts）：站外图不让它把 referrer / IP 送出去，
+/** 消息栏里的**图片加固**（见 utils/mdImages.ts）：站外图不让它把 referrer / IP 送出去，
  *  裂图换成一条能点开的链接。
  *
- *  只认 `.md body`（答案正文的两个渲染点：流式的 `.md body md-part` 与完成态的 `.md body`），
- *  所以阅读器正文、PDF 页图、裁图卡片一张都不受影响。
+ *  **一个观察器挂在整条消息栏上**（`msgsEl`），按容器一次认全里面所有 `v-html` 渲染点：
+ *  ① 答案正文 `.md body`（流式的 `.md body md-part` 与完成态的 `.md body`）；
+ *  ② 工具 / 思考段的 lead 文本 `.md-lead`（轨迹行里那块，**没有** `.md body` 类）；
+ *  ③ 压缩留痕 `.md small`。
+ *  三处都在这棵树下 ⇒ 不为每一处再挂一个观察器：换容器 / 卸载只断这一个（见 `onUnmounted`）。
  *  为什么挂观察器而不是 `watch(messages) + nextTick`：正文是**按块** `v-html` 的，流式时只有最后
- *  一块在重设 innerHTML —— 观察器接得住"这一批新增的图"，watch 只会在整条消息变化时跑一次。 */
+ *  一块在重设 innerHTML —— 观察器接得住"这一批新增的图"，watch 只会在整条消息变化时跑一次。
+ *  消息栏之外（阅读器正文、PDF 页图、附件缩略图 `.atts`）不在`.md` 下，一张都不动。 */
 let stopImgWatch: (() => void) | null = null;
 watch(msgsEl, (el) => {
   stopImgWatch?.();
-  stopImgWatch = watchAnswerImages(el);
+  stopImgWatch = watchAnswerImages(el, ['.md', '.md-lead']);
 });
 
 let msgsSaveTimer = 0;
@@ -3736,7 +3740,10 @@ defineExpose({ uploadFiles, ensureThread });
 
                       <template v-else-if="item.lead">
                         <template v-if="item.lead.s.kind === 'text'">
-                          <div v-html="renderAnswer(item.lead.s.text || '', m.citations)" />
+                          <!-- `.md-lead`：这块是**渲染过的 markdown**（可能会有图），
+                               但按设计不带 `.md body` 类（版面跟答案正文不一样），
+                               于是它被图片加固单列成一个容器名（见 mdImages.ts）。 -->
+                          <div class="md-lead" v-html="renderAnswer(item.lead.s.text || '', m.citations)" />
                         </template>
                         <!-- 思考段：第一行是「⌄ ✦ 思考 · 一行摘要」，正文在下面**从最左边起**，
                              不缩进、不用等宽字体（思考是一段中文正文，不是代码）。

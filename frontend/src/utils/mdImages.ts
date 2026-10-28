@@ -48,23 +48,40 @@ function hardenOne(img: HTMLImageElement): void {
 }
 
 /** 裂图 → 「链接 + 一句提示」。原地替换（同一个父节点、同一个位置），不留空位。 */
+/** 站外图现在都经本站代理（/api/v1/webimg?url=…）：裂了要"点开看原图"时，
+ *  指回**第三方原地址**才有意义（代理再点还是同一个失败）。只在用户主动点的时候才出去，
+ *  不算"自动直连第三方"。解不出来就退回代理地址。 */
+function originalOf(src: string): string {
+  if (src.indexOf('/api/v1/webimg?') < 0) return src;
+  try {
+    const raw = new URL(src, window.location.origin).searchParams.get('url') || '';
+    return /^https:\/\//i.test(raw) ? raw : src;
+  } catch {
+    return src;
+  }
+}
+
 function replaceWithLink(img: HTMLImageElement): void {
   if (img.hasAttribute(BROKEN)) return;
   img.setAttribute(BROKEN, '1');
   const doc = img.ownerDocument;
   const src = (img.getAttribute('src') || '').trim();
+  const link = src ? originalOf(src) : '';
   const label = (img.getAttribute('alt') || '').trim() || '查看原图';
   const frag = doc.createDocumentFragment();
   /* 外面已经套了 `<a>`（markdown 的 `[![alt](img)](link)`）就不能再套一层：
      内嵌 `<a>` 是非法结构，浏览器解析时会把 DOM 拆开。那种情况只留 alt 文字，
      跳转交给外面那层现成的链接。 */
-  if (src && !img.closest('a')) {
+  if (link && !img.closest('a')) {
     const a = doc.createElement('a');
     a.className = 'md-img-link';
-    a.href = src;
+    a.href = link;
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
     a.textContent = label;
+    /* 链接长在可点击的容器里（轨迹行点一下展开/收起、答案区点一下认引用标记）：
+       点开图不该顺手把那一行折叠掉。 */
+    a.addEventListener('click', (e) => e.stopPropagation());
     frag.append(a);
   } else {
     const text = doc.createElement('span');
@@ -72,10 +89,14 @@ function replaceWithLink(img: HTMLImageElement): void {
     text.textContent = label;
     frag.append(text);
   }
-  const hint = doc.createElement('span');
-  hint.className = 'md-img-hint';
-  hint.textContent = HINT;
-  frag.append(hint);
+  /* 预览那种**按行数裁切**的小块（`.clamp1` / `.clamp2`）里不再追加提示：那两行本来就短，
+     一句提示会把整行挤爆 —— 链接本身已经说明"点这里看原图"。 */
+  if (!img.closest('.clamp1, .clamp2')) {
+    const hint = doc.createElement('span');
+    hint.className = 'md-img-hint';
+    hint.textContent = HINT;
+    frag.append(hint);
+  }
   img.replaceWith(frag);
 }
 
@@ -88,13 +109,27 @@ function replaceWithLink(img: HTMLImageElement): void {
  * - **捕获阶段的 `error` 监听**：`error` 不冒泡，但捕获阶段在祖先上收得到；这样"插进来 → 立刻失败"
  *   这种一帧内发生的事也不会漏（观察器回调要到下一帧才跑）。
  *
- * `selector` 只认回答正文（默认 `.md.body`，ReaderChat 的答案容器就是 `class="md body"`）：
- * 阅读器正文、PDF 页图、裁图卡片都不在这棵树下，一个都不动。
+ * `selectors` 决定**观察根下面哪些东西算"回答"**：
+ * - 默认 `.md.body`（ReaderChat 的答案容器就是 `class="md body"`）；
+ * - 传数组 = 一次认多个容器（`closest` / `querySelectorAll` 都吃逗号列表，合成一条即可）；
+ * - 传 `null` = 这棵树里**每一个 `img`**（调用点自己保证 root 是一棵"只有回答"的树，
+ *   比如会话消息栏：那里的答案正文、`.md.small` 压缩留痕、`.md-lead` 工具/思考段都算）。
+ * 树外的阅读器正文、PDF 页图、裁图卡片，无论哪种模式都不动。
  */
-export function watchAnswerImages(root: HTMLElement | null | undefined, selector = '.md.body'): () => void {
+export function watchAnswerImages(
+  root: HTMLElement | null | undefined,
+  selectors: string | string[] | null = '.md.body',
+): () => void {
   if (!root) return () => {};
-  const hardenAll = (t?: HTMLElement) => { if (t) hardenAnswerImages(t); };
-  root.querySelectorAll<HTMLElement>(selector).forEach(hardenAll);
+  /* 多个选择器合成一条 CSS 列表；`null` = 整棵树（见上面那条说明） */
+  const selector = selectors == null ? null
+    : (Array.isArray(selectors) ? selectors.join(', ') : selectors);
+  /** 一个节点属于哪个加固容器：整棵树模式下就是 root 自己 */
+  const hostOf = (el: Element): HTMLElement | null => (selector
+    ? (el.closest?.(selector) ?? el.querySelector?.(selector)) as HTMLElement | null
+    : root);
+  if (selector) root.querySelectorAll<HTMLElement>(selector).forEach((el) => hardenAnswerImages(el));
+  else hardenAnswerImages(root);
 
   const pending = new Set<HTMLElement>();
   let queued = false;
@@ -110,7 +145,7 @@ export function watchAnswerImages(root: HTMLElement | null | undefined, selector
         if (node.nodeType !== Node.ELEMENT_NODE) return;
         const el = node as HTMLElement;
         /* 两种插法都接住：插进正文里的（增量 / KaTeX 后渲染）和整块正文被换掉的（历史消息、切会话） */
-        const host = (el.closest?.(selector) ?? el.querySelector?.(selector)) as HTMLElement | null;
+        const host = hostOf(el);
         if (host) pending.add(host);
       });
     }
@@ -123,7 +158,7 @@ export function watchAnswerImages(root: HTMLElement | null | undefined, selector
   const onError = (e: Event) => {
     const t = e.target;
     if (!(t instanceof HTMLImageElement) || !root.contains(t)) return;
-    const host = t.closest<HTMLElement>(selector);
+    const host = hostOf(t);
     if (host) hardenAnswerImages(host);
   };
   root.addEventListener('error', onError, true);
