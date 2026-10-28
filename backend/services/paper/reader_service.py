@@ -1889,11 +1889,55 @@ def get_progress(paper_id: str, user_id: int = 1) -> dict:
         return _progress_payload(sess.get(ReadingProgress, (user_id, paper_id)))
 
 
+def _row_detail(paper_id: str, block_id: str) -> dict | None:
+    """行 id（`p017-02`）→ 阅读器正文的**那一行**；不是行 id / 这一页没这行 → None。
+
+    为什么要有它：`block_detail` 以前只认 `Block.id`，而 agent 的 `page_markdown_get`
+    按**行**引用时给的是行 id（`row_id`，见 `agent/project.py` 的 `as_row_id`），于是
+    "按行引用"的跨论文浮窗必然 404 —— 块式引用能用、行式引用不能用，最糟的那种半坏。
+
+    三条硬口径：
+
+    - 行 id 自带页码，**只在这一页里精确匹配**（解析复用 `group_refs.row_pair`）；
+      不跨页猜、不做整篇模糊搜索 —— 认不出/找不到就是 None（调用方照旧 404）；
+    - 只认规范形状 `p<三位页码>-<两位序号>`（`page_translate.pair_rows` 造行的同一口径）；
+    - 正文与译文取**阅读器同一份行**（`_rows_of_page` → `page_translations` 的 `rows`），
+      不另解析一遍 Markdown。
+    """
+    from backend.services.understanding.group_refs import row_pair
+
+    pair = row_pair(block_id)
+    if pair is None:
+        return None
+    page_no, index = pair
+    if block_id != f"p{page_no:03d}-{index:02d}":
+        return None
+    for row in _rows_of_page(paper_id, page_no):
+        if str(row.get("id") or "") != block_id:
+            continue
+        return {
+            "id": block_id, "paper_id": paper_id, "page": int(page_no),
+            "type": str(row.get("type") or "para"),
+            "text": str(row.get("original") or ""),
+            "translation": str(row.get("translation") or ""),
+            "formula": None, "section": row.get("section") or "",
+        }
+    return None
+
+
 def block_detail(paper_id: str, block_id: str) -> dict:
     md_map = load_markdown_map(paper_id)
     with session_scope() as sess:
         b = sess.get(Block, block_id)
-        if b is None or b.paper_id != paper_id:
+        if b is None:
+            # 块表里**根本没有**这个 id —— 别篇引用按行给 id 是常态（见 `_row_detail`），
+            # 这里不退就等于浮窗读不到。仍找不到 → 保持"块不存在"的 404 语义，绝不退化成空内容。
+            row = _row_detail(paper_id, block_id)
+            if row is None:
+                raise NotFoundError(f"块不存在：{block_id}")
+            return row
+        if b.paper_id != paper_id:
+            # 归属校验照旧（单独一支）：块存在、但不是这篇的 —— **不许**借行回退交出去
             raise NotFoundError(f"块不存在：{block_id}")
         f = sess.get(Formula, block_id)
         return {
