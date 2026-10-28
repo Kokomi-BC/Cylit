@@ -3158,14 +3158,11 @@ function placePickPop() {
   let left = r.left;
   if (left + w > window.innerWidth - 8) left = window.innerWidth - 8 - w;
   left = Math.max(8, left);
-  /* 纵向：**优先让整块落在输入区（`.composer`）上沿之上**。
-     `.composer` 自带一层不透明的底，贴着触发钮弹的话，菜单整块都压在那层白底上 ——
-     背后没有任何内容，`backdrop-filter` 糊出来还是纯白（用户 2026-12-27「没看出毛玻璃效果」）。
-     退到输入区上沿之后，背后就是消息正文，玻璃才看得出。放不下再退回贴着按钮弹。 */
-  const host = btn.closest<HTMLElement>('.composer');
-  const hostTop = host ? host.getBoundingClientRect().top : r.top;
-  let top = hostTop - 6 - h;
-  if (top < 8) top = r.top - 5 - h;
+  /* 纵向：**贴着触发钮往上弹**（用户口径 2026-12-27「贴着按钮」）。
+     代价说清楚：这块浮层背后就是 `.composer` 那层不透明的底，`backdrop-filter` 糊出来的还是纯白，
+     所以在停靠态（侧栏）里玻璃感很弱；浮层模式 / 菜单高到越过输入区时，背后才是正文，玻璃才明显。
+     上方放不下就掉到按钮下面，最后夹进视口。 */
+  let top = r.top - 5 - h;
   if (top < 8) top = Math.min(window.innerHeight - h - 8, r.bottom + 5);
   top = Math.max(8, top);
   popPos.value = { left: Math.round(left), top: Math.round(top) };
