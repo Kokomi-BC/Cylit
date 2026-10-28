@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,15 @@ from backend.services.translation import page_translate
 from backend.services.translation.page_translate import PATH_VERSION, PAGES_VERSION, PageStore
 
 PAPER = "test-page-edit"
+
+#: 回滚会**重写整页 JSON**（含秒级 `updated_at`），所以"逐字节回到改动前"只能比内容不能比时间戳 ——
+#: 实测全量跑时踩到过：改前 12:14:41、回滚写盘 12:14:42，两条只隔一瞬就红（单跑必绿）。
+#: 这不是放宽断言：行/块内容仍然逐字节比，只把那两个时间字段归一。
+_TS_RE = re.compile(r'"(created_at|updated_at)": "[^"]*"')
+
+
+def _no_ts(text: str) -> str:
+    return _TS_RE.sub(r'"\1": "<ts>"', text)
 
 MD_A = "# Attention\n\nThe scale factor is 1/sqrt(dk) here.\n\nSecond paragraph stays.\n"
 MD_B = "# 注意力\n\n缩放因子是 1/sqrt(dk)。\n\n第二段不动。\n"
@@ -215,7 +225,7 @@ def test_restructure_is_rolled_back(env) -> None:
     out = page_edit.replace(PAPER, 1, "original", "one\n\npara two", "one and two")
     assert out["ok"] is False and "结构" in out["error"]
     assert out["blocks_before"] == 2 and out["blocks_after"] == 1
-    assert env["path_a"].read_text(encoding="utf-8") == before
+    assert _no_ts(env["path_a"].read_text(encoding="utf-8")) == _no_ts(before)
 
 
 def test_deleting_the_whole_side_is_rolled_back(env) -> None:
@@ -223,7 +233,7 @@ def test_deleting_the_whole_side_is_rolled_back(env) -> None:
     before = env["path_a"].read_text(encoding="utf-8")
     out = page_edit.replace(PAPER, 1, "original", "only one block\n", "")
     assert out["ok"] is False
-    assert env["path_a"].read_text(encoding="utf-8") == before
+    assert _no_ts(env["path_a"].read_text(encoding="utf-8")) == _no_ts(before)
 
 
 # --------------------------------------------------------------------------
