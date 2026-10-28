@@ -54,6 +54,9 @@ class _Deps:
         self.host = host
         self.paper_id = "p1"
         self.registry = RefRegistry("p1")
+        # Deps 契约里有它：`_read_target` 连「不跨篇」的早退分支都要读 page_total，
+        # 桩少这一个字段，回执就变成「工具内部错误：AttributeError」
+        self.page_total = 22
         self.query_cache: dict = {}
         self.row_spans: dict = {}
 
