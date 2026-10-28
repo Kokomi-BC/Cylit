@@ -16573,3 +16573,32 @@ A089  row_id p008-00  page 8  type figure   ← 第 8 页首行（caption/figure
 
 也就是说：现在闪的**就是那几个正文行**；能不能合成一枚大块仍由"是否连续"决定（不连续时逐行亮，
 这正是之前定下的口径）。
+---
+
+# 251 · 引用浮窗「明明有空间还被裁」——上限写死 + 摆位按挂载时的高度判翻（2026-12-27）
+
+用户口径：**「标号的浮窗在有空间时仍然裁切的问题」**（截图里正文被切在卡片下沿）。
+
+## 两个根因（都在 `FloatingCard.vue`）
+
+1. `applyShellDom` 把 `max-height` 写成 `props.maxHeight`（引用速览卡传的是 **420**）：
+   屏幕还有 700px 也只长到 420，正文就截在那儿。
+2. `place()` 判断「下面放不放得下」用的是**当前的 `offsetHeight`**：刚挂载时正文还没排版，
+   量到的只有几十像素 → 判定放得下 → 等正文长出来，卡片下沿已经压到屏幕外（实测 top=716 / h=160 / `vh=820`，
+   `bottom=876` 已经出屏）。
+
+## 改法
+
+- `max-height` 取「内容想要的高度」与「屏幕真的还剩多少」的**较小值**：
+  `min(h ?? props.maxHeight, max(120, viewportH - top - 12))`；`viewportH` 是响应式的（`resize` 时重量），
+  所以窗口一变卡片会跟着重新夹一次。
+- `place()` 的翻面判定改用**内容自然高度**：`min(props.maxHeight, 正文 scrollHeight + 标题栏高 + 22)`。
+
+## 实测（无头 Chrome，14 枚解读标号逐个 hover，读卡片矩形与 `.fc-body` 的 scroll/client）
+
+```
+vh = 820
+maxH 不再是常量 420，而是 room：326 / 327 …
+每张卡 h = 149 / 157 / 186 / 223 / 256 …，body scrollHeight == clientHeight（**没有一处被裁**）
+anyOffScreen = false（改前有一例 bottom=876 > 820）
+```

@@ -96,7 +96,13 @@ async function place() {
     return;
   }
   const w = box.offsetWidth || props.width;
-  const h = box.offsetHeight || 120;
+  /* 摆位要按**内容想要的高度**判断翻不翻，不能按当前的 `offsetHeight`：刚挂载时正文还没排版，
+     `offsetHeight` 只有几十像素 → 判定"下面放得下" → 等正文长出来，卡片下沿已经压到屏幕外
+     （用户口径 2026-12-27「标号的浮窗在有空间时仍然裁切」）。上限仍受 `props.maxHeight` 约束。 */
+  const headH = headEl.value?.offsetHeight ?? 0;
+  const bodySh = bodyEl.value?.scrollHeight ?? 0;
+  const natural = bodySh ? bodySh + headH + 22 : (box.offsetHeight || 120);
+  const h = Math.min(props.maxHeight, natural);
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   let left = a.x - 8;
@@ -397,6 +403,11 @@ watch(() => [props.open, props.anchor?.x, props.anchor?.y, props.anchor?.h] as c
   () => { void place(); }, { immediate: true });
 
 /** 内容尺寸变了（切换查看/编辑、流式回答变长）也要重新夹一次 */
+/** 视口高度（响应式）：卡片的 `max-height` 要按「屏幕还剩多少」夹一次，窗口一变就得重量。 */
+const viewportH = ref(typeof window === 'undefined' ? 900 : window.innerHeight);
+function onViewportResize() { viewportH.value = window.innerHeight; }
+if (typeof window !== 'undefined') window.addEventListener('resize', onViewportResize);
+
 let ro: ResizeObserver | null = null;
 watch(el, (node) => {
   ro?.disconnect();
@@ -407,6 +418,7 @@ watch(el, (node) => {
 });
 onBeforeUnmount(() => {
   ro?.disconnect();
+  if (typeof window !== 'undefined') window.removeEventListener('resize', onViewportResize);
   releaseFloatSelection();
   document.removeEventListener('pointerdown', onMoreDocDown, true);
   document.removeEventListener('keydown', onMoreKey, true);
@@ -601,6 +613,7 @@ function applyShellDom() {
   const node = el.value;
   if (!node) return;
   const h = sizeH.value;
+  const top = pos.value.top;
   if (!drag.on && !rs.on) {
     node.style.left = pos.value.left + 'px';
     node.style.top = pos.value.top + 'px';
@@ -608,7 +621,13 @@ function applyShellDom() {
   if (!rs.on) {
     node.style.width = (sizeW.value ?? props.width) + 'px';
     node.style.height = h === null ? '' : h + 'px';
-    node.style.maxHeight = (h ?? props.maxHeight) + 'px';
+    /* 上限取「内容想要的高度」与「屏幕上真的还剩多少」的**较小值**（用户口径 2026-12-27
+       「标号的浮窗在有空间时仍然裁切」）：原来这里写死 `props.maxHeight`（引用速览卡是 420），
+       屏幕明明还有 700px 也只长到 420 —— 正文被切在卡片下沿，看着像被裁了。`- 12` 是离屏幕
+       底边留的呼吸位；`viewportH` 是响应式的，窗口一变这个 effect 会重跑，卡片跟着重新夹一次。 */
+    const cap = h ?? props.maxHeight;
+    const room = Math.max(120, viewportH.value - top - 12);
+    node.style.maxHeight = Math.min(cap, room) + 'px';
   }
 }
 watchEffect(applyShellDom, { flush: 'sync' });
