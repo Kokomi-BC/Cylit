@@ -1327,9 +1327,56 @@ def markdown_tables(paper_id: str) -> dict:
                 "model": payload.get("model"),
             })
     items.sort(key=lambda it: (it["page"], it.get("row_id") or ""))
+    items = _merge_split_tables(items)
     return {"items": items, "count": len(items),
             "translated": sum(1 for it in items if it["source"] == "translation"),
             "pages": len(products)}
+
+
+def _merge_split_tables(items: list[dict]) -> list[dict]:
+    """把**跨页拆开的一张表**并回一张（用户口径 2026-12-28：「跨页表格要能看全」）。
+
+    判据（三条同时成立才并，缺一条就各留各的）：
+
+    1. **第一页那半有表号**，第二页那半要么没表号、要么同一个号（拆表的第二半常常不带表注）；
+    2. 页码**相邻**（p, p+1）：中间隔了页就说明不是接着排的；
+    3. 列数相同 + **表头那一行去空白后完全相同**（拆表的第二半通常重复同一行表头）——
+       列数不同或表头不同就是另一张表，宁可分开。
+
+    合并方式：表头与分隔行取**第一页**那份，第二页那两行丢掉，其余行按顺序接上；
+    表注取第一条非空的；`pages` 记下这两页（前端/接口据此知道它跨了两页）。
+    """
+    def head(md: str) -> str:
+        """表头那一行（去掉空白后比）：拆表的第二半通常会**重复同一行表头**。"""
+        for ln in str(md or "").splitlines():
+            if ln.strip() and "|" in ln:
+                return "".join(ln.split())
+        return ""
+
+    out: list[dict] = []
+    for it in items:
+        prev = out[-1] if out else None
+        if (prev is not None
+                and str(prev.get("number") or "").strip()
+                # 第二半常常**没有表注**（表注只在第一页那半），所以它的 number 可以是空；
+                # 但要是它自己标了另一个号，就绝不能并。
+                and (not str(it.get("number") or "").strip()
+                     or str(it.get("number") or "") == str(prev.get("number") or ""))
+                and int(it.get("page") or 0) == int(prev.get("page") or 0) + 1
+                and int(prev.get("cols") or 0) == int(it.get("cols") or 0) > 0
+                and head(prev.get("markdown") or "") == head(it.get("markdown") or "")):
+            lines = [ln for ln in str(it.get("markdown") or "").splitlines() if ln.strip()]
+            # 第二页那份的「表头 + 分隔行」是它自己的表头（拆表时模型会给两遍），接的时候丢掉
+            body = lines[2:] if len(lines) > 2 and _TABLE_SEP.search(lines[1]) else []
+            if body:
+                prev["markdown"] = str(prev.get("markdown") or "").rstrip() + "\n" + "\n".join(body)
+                prev["rows"] = int(prev.get("rows") or 0) + len(body)
+                prev["pages"] = [int(prev.get("page") or 0), int(it.get("page") or 0)]
+                prev["caption"] = prev.get("caption") or it.get("caption")
+                prev["caption_original"] = prev.get("caption_original") or it.get("caption_original")
+                continue
+        out.append(it)
+    return out
 
 
 def tables_payload(paper_id: str) -> dict:

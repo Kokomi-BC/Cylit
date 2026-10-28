@@ -10424,9 +10424,16 @@ function renderMarkdown(text?: string | null) {
   display: flex; flex-direction: column; gap: 8px;
   border-radius: var(--radius-sm);
 }
+/* 插图：**按原始比例缩放**，不铺底色。
+ *
+ *  原来是 `width:100% + max-height:200 + object-fit:contain + 浅灰底`：竖版的图（1834×2699）
+ *  被塞进 334×200 的框里、只画出 136 宽，左右各 99px 的垫底色就成了两块"白板"——
+ *  看着像卡片里另有一层界面（用户 2026-12-28 的截图）。现在宽度随内容、高度封顶，
+ *  比例不动、底色透明，和卡片里其它内容同一块surface。 */
 .cite-peek-img {
-  display: block; width: 100%; max-height: 200px; object-fit: contain;
-  border-radius: var(--radius-sm); background: var(--bg-sunken);
+  display: block; margin: 0 auto;
+  width: auto; max-width: 100%; max-height: 300px;
+  border-radius: var(--radius-sm); background: transparent;
 }
 /* 来源标记（别篇的引用才有）：标题行里紧跟标题的一枚小胶囊，说清「这段不是本文的」。
    与 .cite-peek-lang 同一行，所以 max-width 收着 + 省略号：标题再长也不把右侧那排按钮挤走。

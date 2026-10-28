@@ -535,3 +535,88 @@ def test_table_lookup_is_computed_once_and_dropped_by_invalidate_cache(monkeypat
     reader_service.invalidate_cache(PAPER)
     reader_service.block_detail(PAPER, "p001-00")
     assert calls == [PAPER, PAPER]
+
+# --------------------------------------------------------------------------
+# 跨页拆表：同一张表被页边界切成两半（两页各有一份「表头 + 若干行」）时，
+# 表格清单要并回**一张**——表头取第一页，行按顺序接上（用户口径 2026-12-28）。
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def split_pages(paths) -> dict:
+    """第 1、2 页各半张 1 号表（列数相同），第 3 页是另一张 2 号表。"""
+    d = paths(PAPER)
+    half1 = "| 方法 | KV |\n|---|---|\n| Full | 16 |\n| KIVI | 3 |"
+    half2 = "| 方法 | KV |\n|---|---|\n| Polar | 3.9 |\n| Ours | 2.5 |"
+    other = "| 指标 | 值 |\n|---|---|\n| BLEU | 28.4 |"
+    write(d["path_a"], {
+        1: {"page": 1, "page_total": 3, "model": "a", "breaks": [],
+            "original_md": half1 + "\n\nTable 1: LongBench results."},
+        2: {"page": 2, "page_total": 3, "model": "a", "breaks": [], "original_md": half2},
+        3: {"page": 3, "page_total": 3, "model": "a", "breaks": [],
+            "original_md": other + "\n\nTable 2: BLEU."},
+    })
+    write(d["path_b"], {
+        1: {"page": 1, "page_total": 3, "model": "b", "breaks": [], "translation_md": ""},
+        2: {"page": 2, "page_total": 3, "model": "b", "breaks": [], "translation_md": ""},
+        3: {"page": 3, "page_total": 3, "model": "b", "breaks": [], "translation_md": ""},
+    })
+    return d
+
+
+def test_split_table_across_pages_is_merged(monkeypatch, split_pages):
+    """同号 + 相邻页 + 列数相同 -> 并成一张，行数相加，pages 记两页。"""
+    got = reader_service.markdown_tables(PAPER)
+    merged = [it for it in got["items"] if it.get("pages") == [1, 2]]
+
+    assert got["count"] == 2                 # 三张半表 -> 一张合并 + 第 3 页那张
+    assert len(merged) == 1
+    item = merged[0]
+    assert item["row_id"] == "p001-00" and item["page"] == 1
+    assert item["rows"] == 4                 # 2 + 2 行
+    assert item["cols"] == 2
+    md = item["markdown"]
+    assert md.count("| 方法 | KV |") == 1    # 表头只留一份
+    assert "Ours" in md and "KIVI" in md    # 两页的行都在
+
+
+def test_tables_with_different_numbers_are_not_merged(monkeypatch, split_pages):
+    """号不同 / 页不相邻一律不并：第 3 页那张 2 号表必须单独在。"""
+    got = reader_service.markdown_tables(PAPER)
+    alone = [it for it in got["items"] if str(it.get("number")) == "2"]
+    assert len(alone) == 1 and alone[0]["page"] == 3
+    assert "pages" not in alone[0]
+
+def test_same_number_but_different_header_is_not_merged(monkeypatch, paths):
+    """同号但表头不同（列名不一样）-> 是两张表，不许并。"""
+    d = paths(PAPER)
+    a = "| 方法 | KV |\n|---|---|\n| Full | 16 |"
+    b = "| 数据集 | 值 |\n|---|---|\n| GloVe | 0.9 |"
+    write(d["path_a"], {
+        1: {"page": 1, "page_total": 2, "model": "a", "breaks": [],
+            "original_md": a + "\n\nTable 1: first."},
+        2: {"page": 2, "page_total": 2, "model": "a", "breaks": [],
+            "original_md": b + "\n\nTable 1: second."},
+    })
+    write(d["path_b"], {1: {"page": 1, "page_total": 2, "model": "b", "breaks": [], "translation_md": ""},
+                        2: {"page": 2, "page_total": 2, "model": "b", "breaks": [], "translation_md": ""}})
+
+    got = reader_service.markdown_tables(PAPER)
+    assert got["count"] == 2
+    assert all("pages" not in it for it in got["items"])
+
+
+def test_uncaptioned_table_on_the_next_page_is_not_merged(monkeypatch, paths):
+    """第一页那张**没有表号**（认不出是哪张表）-> 一律不并。"""
+    d = paths(PAPER)
+    a = "| 方法 | KV |\n|---|---|\n| Full | 16 |"
+    b = "| 方法 | KV |\n|---|---|\n| Polar | 3.9 |"
+    write(d["path_a"], {
+        1: {"page": 1, "page_total": 2, "model": "a", "breaks": [], "original_md": a},
+        2: {"page": 2, "page_total": 2, "model": "a", "breaks": [], "original_md": b},
+    })
+    write(d["path_b"], {1: {"page": 1, "page_total": 2, "model": "b", "breaks": [], "translation_md": ""},
+                        2: {"page": 2, "page_total": 2, "model": "b", "breaks": [], "translation_md": ""}})
+
+    got = reader_service.markdown_tables(PAPER)
+    assert got["count"] == 2 and all("pages" not in it for it in got["items"])
