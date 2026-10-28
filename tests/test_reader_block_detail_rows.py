@@ -152,12 +152,13 @@ def test_block_id_returns_the_unchanged_branch(monkeypatch, paths):
         "col": 0, "order": 3, "bbox": [10.0, 20.0, 110.0, 40.0],
         "text": BLOCK_MD["text"], "translation": BLOCK_MD["translation"],
         "content_hash": "hash-1", "section": "s-1", "formula": None,
-        # 唯一的增量：末尾多一个 figure（这篇没有插图 -> None）
+        # 增量只在末尾：figure（这篇没有插图 -> None）、table（这篇没有表 -> None）
         "figure": None,
+        "table": None,
     }
     assert list(got) == ["id", "paper_id", "page", "type", "col", "order", "bbox",
                          "text", "translation", "content_hash", "section", "formula",
-                         "figure"]
+                         "figure", "table"]
 
 
 def test_block_preview_is_the_text_fallback(monkeypatch, paths):
@@ -304,8 +305,10 @@ CAPTION_ITEM = {
 def fresh_figure_cache():
     """这一层是**进程内**缓存（TTL 30s）：每个用例前后都清掉，别让替身互相串。"""
     reader_service._figure_cache.clear()
+    reader_service._table_cache.clear()
     yield
     reader_service._figure_cache.clear()
+    reader_service._table_cache.clear()
 
 
 def test_block_branch_carries_the_figure(monkeypatch, paths):
@@ -325,7 +328,7 @@ def test_block_branch_carries_the_figure(monkeypatch, paths):
         "caption_zh": item["caption_zh"],
     }
     # 只加在末尾：原有字段与顺序一个都没动
-    assert list(got)[-1] == "figure"
+    assert list(got)[-1] == "table"          # 只加在末尾（figure 之后）
     assert got["formula"] is None and got["type"] == "caption"
 
 
@@ -339,7 +342,7 @@ def test_paragraph_block_gets_no_figure_even_when_the_page_has_one(monkeypatch, 
 
     assert got["text"] == "Beta sentence two."
     assert got["figure"] is None
-    assert list(got)[-1] == "figure"          # 字段在，值是 None（不是"字段消失"）
+    assert list(got)[-2:] == ["figure", "table"]   # 字段在，值是 None（不是"字段消失"）
 
 
 def test_row_fallback_carries_the_figure(monkeypatch, two_pages):
@@ -357,7 +360,7 @@ def test_row_fallback_carries_the_figure(monkeypatch, two_pages):
         "caption": CAPTION_ITEM["caption"],
         "caption_zh": CAPTION_ITEM["caption_zh"],
     }
-    assert list(got)[-1] == "figure"
+    assert list(got)[-1] == "table"          # 只加在末尾（figure 之后）
 
 
 def test_missing_or_broken_figures_yield_none_and_never_raise(monkeypatch, two_pages):
@@ -402,6 +405,131 @@ def test_figure_index_is_computed_once_and_dropped_by_invalidate_cache(monkeypat
     reader_service.block_detail(PAPER, "p001-00")
     reader_service.block_detail(PAPER, "p001-01")
     reader_service.block_detail(PAPER, "p002-00")
+    assert calls == [PAPER]
+
+    reader_service.invalidate_cache(PAPER)
+    reader_service.block_detail(PAPER, "p001-00")
+    assert calls == [PAPER, PAPER]
+
+# --------------------------------------------------------------------------
+# 表格：**表注行与表体行在页产物里是两行**（实测 attention 第 6 页：p006-00 表注、p006-01 表体），
+# agent 引用表格时给的是表注那一行 —— 块详情必须把表带上，否则浮窗里只剩一句「表 1：…」。
+# 口径与 figure 一致：**同页 + 表号相同且唯一**才给，否则 None（不按页猜）。
+# --------------------------------------------------------------------------
+
+#: 一张 2 列表的 Markdown（与产线 markdown_tables 里那一份同形）
+TABLE_MD = "| 层类型 | 每层复杂度 |\n|---|---|\n| 自注意力 | $O(n^2 d)$ |"
+
+
+def tables_stub(*items) -> None:
+    return lambda paper_id: {"items": [dict(it) for it in items], "count": len(items)}
+
+
+def table_item(**kw) -> dict:
+    base = dict(id="t001-0000", page=1, number="1", markdown=TABLE_MD, rows=1, cols=2,
+                caption="表 1：不同层类型的最大路径长度。",
+                caption_original="Table 1: Maximum path lengths.", source="translation",
+                row_id="p001-01")
+    base.update(kw)
+    return base
+
+
+@pytest.fixture
+def caption_page(paths):
+    """第 1、2 页各放一句**表注**（`Table 1: …` / `表 2：…`）：用来验「同页 + 表号」这条判据。"""
+    d = paths(PAPER)
+    write(d["path_a"], {
+        1: {"page": 1, "page_total": 2, "model": "a", "breaks": [],
+            "original_md": "Table 1: Maximum path lengths."},
+        2: {"page": 2, "page_total": 2, "model": "a", "breaks": [],
+            "original_md": "Something on page two."},
+    })
+    write(d["path_b"], {
+        1: {"page": 1, "page_total": 2, "model": "b", "breaks": [],
+            "translation_md": "表 1：最大路径长度。"},
+        2: {"page": 2, "page_total": 2, "model": "b", "breaks": [],
+            "translation_md": "第二页的一句话。"},
+    })
+    return d
+
+
+def test_caption_row_carries_the_table(monkeypatch, caption_page):
+    """表注行 -> 带上同页那张 1 号表的 Markdown（这就是「只有表注」的修复点）。"""
+    use_session(monkeypatch, FakeSession())
+    monkeypatch.setattr(reader_service, "load_markdown_map", lambda pid: {})
+    monkeypatch.setattr(reader_service, "markdown_tables",
+                        tables_stub(table_item()))
+
+    got = reader_service.block_detail(PAPER, "p001-00")
+
+    assert got["type"] == "caption" or got["text"].startswith("Table 1")
+    assert got["table"] == {
+        "id": "t001-0000", "page": 1, "number": "1",
+        "caption": "表 1：不同层类型的最大路径长度。",
+        "caption_original": "Table 1: Maximum path lengths.",
+        "markdown": TABLE_MD, "rows": 1, "cols": 2, "source": "translation",
+    }
+    assert got["figure"] is None
+
+
+def test_table_lookup_is_scoped_to_the_page(monkeypatch, caption_page):
+    """同一个表号出现在**另一页**：不许跨页配上来（缺了就说缺）。"""
+    use_session(monkeypatch, FakeSession())
+    monkeypatch.setattr(reader_service, "load_markdown_map", lambda pid: {})
+    monkeypatch.setattr(reader_service, "markdown_tables", tables_stub(table_item(page=2)))
+
+    assert reader_service.block_detail(PAPER, "p001-00")["table"] is None
+
+
+def test_two_tables_with_the_same_number_on_one_page_yield_none(monkeypatch, caption_page):
+    """同页两张同号表（跨页拆表那种）：候选不唯一 -> 两个都不给，绝不猜。"""
+    use_session(monkeypatch, FakeSession())
+    monkeypatch.setattr(reader_service, "load_markdown_map", lambda pid: {})
+    monkeypatch.setattr(reader_service, "markdown_tables",
+                        tables_stub(table_item(), table_item(id="t001-0001", row_id="p001-02")))
+
+    assert reader_service.block_detail(PAPER, "p001-00")["table"] is None
+
+
+def test_block_branch_matches_a_table_whose_caption_lives_inside_the_block(monkeypatch, paths):
+    """解析把表注写在 table 块里时（attention 那篇就是这样）：块分支也要认出来。"""
+    bid = "attentioncle-p01-b01"
+    use_session(monkeypatch, FakeSession(blocks={bid: block(bid, type="table")}))
+    monkeypatch.setattr(reader_service, "load_markdown_map",
+                        lambda pid: {bid: {"text": "Table 1: Maximum path lengths.", "translation": "表 1：最大路径长度。"}})
+    monkeypatch.setattr(reader_service, "markdown_tables", tables_stub(table_item()))
+
+    got = reader_service.block_detail(PAPER, bid)
+    assert got["table"]["markdown"] == TABLE_MD
+    assert list(got)[-1] == "table"
+
+
+def test_broken_tables_payload_only_drops_the_field(monkeypatch, caption_page):
+    """表格清单自己炸了 -> 只丢 table，块详情照旧（绝不 500）。"""
+    use_session(monkeypatch, FakeSession())
+    monkeypatch.setattr(reader_service, "load_markdown_map", lambda pid: {})
+
+    def boom(paper_id):
+        raise RuntimeError("产物坏了")
+
+    monkeypatch.setattr(reader_service, "markdown_tables", boom)
+    got = reader_service.block_detail(PAPER, "p001-00")
+    assert got["table"] is None and got["text"] == "Table 1: Maximum path lengths."
+
+
+def test_table_lookup_is_computed_once_and_dropped_by_invalidate_cache(monkeypatch, caption_page):
+    """性能：同一篇连开多个块详情只算一次表格；invalidate_cache 之后重算。"""
+    use_session(monkeypatch, FakeSession())
+    monkeypatch.setattr(reader_service, "load_markdown_map", lambda pid: {})
+    calls: list[str] = []
+
+    def counting(paper_id):
+        calls.append(paper_id)
+        return {"items": [table_item()], "count": 1}
+
+    monkeypatch.setattr(reader_service, "markdown_tables", counting)
+    reader_service.block_detail(PAPER, "p001-00")
+    reader_service.block_detail(PAPER, "p001-00")
     assert calls == [PAPER]
 
     reader_service.invalidate_cache(PAPER)

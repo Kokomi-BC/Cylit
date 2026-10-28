@@ -99,6 +99,7 @@ def invalidate_cache(paper_id: str) -> None:
         _cache.pop(paper_id, None)
         _cache.pop(f"{paper_id}::index", None)
         _figure_cache.pop(paper_id, None)
+        _table_cache.pop(paper_id, None)
 
 
 def load_page_store(paper_id: str, force: bool = False) -> PageStore:
@@ -1895,6 +1896,60 @@ def _figure_for(paper_id: str, block_id: str) -> dict | None:
             "caption": item.get("caption"), "caption_zh": item.get("caption_zh")}
 
 
+#: 表格映射的 TTL 缓存 —— 与 `_figure_cache` 同一套理由：`block_detail` 是**每块一次**的请求，
+#: 而装配一次表格清单要把整篇页产物走一遍。过期最多让 `table` 晚 30s 更新；配对只认
+#: 「同页 + 表号相同」，不会把别的表配上来。
+_TABLE_CACHE_TTL = 30.0
+_table_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _table_items(paper_id: str) -> list[dict]:
+    """`markdown_tables` 的那一份（按 ``paper_id`` 缓存，策略见 `_table_cache`）。"""
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _table_cache.get(paper_id)
+        if cached and (now - cached[0]) < _TABLE_CACHE_TTL:
+            return cached[1]
+    items = list(markdown_tables(paper_id).get("items") or [])
+    with _cache_lock:
+        _table_cache[paper_id] = (now, items)
+    return items
+
+
+def _table_for(paper_id: str, page: int, *texts: str) -> dict | None:
+    """这一块所配的那张表：**同一页 + 表号相同**，且候选必须唯一。
+
+    为什么需要它：表格的**表注行**与**表体行**在页产物里是两行（实测 Attention 第 6 页：
+    ``p006-00`` 是表注（`type=caption`）、``p006-01`` 才是表体）。agent 引用表格时给的是表注那一行，
+    于是块详情里只有一句表注、没有表 —— 用户看到的就是「只有表注」（2026-12-28 截图）。
+
+    口径（与 `_figure_for` 一致：**缺了就说缺，不要猜**）：
+
+    - 表号从这一块的原文 / 译文里认（`表 1：…` 与 `Table 1: …` 都认，复用 `_TABLE_CAP`）；
+    - 候选只认**同一页**上号相同的那一张，且必须**唯一**；两张同号（跨页拆表）或一张都没有 → None；
+    - 表格清单自己炸了只丢这个字段，绝不让块详情 500。
+    """
+    for text in texts:
+        m = _TABLE_CAP.match((text or "").strip())
+        if not m:
+            continue
+        number = m.group(1)
+        try:
+            hits = [it for it in _table_items(paper_id)
+                    if int(it.get("page") or 0) == int(page or 0)
+                    and str(it.get("number") or "") == number]
+        except Exception as exc:  # noqa: BLE001 —— 表格只是附加信息
+            log.warning("表格映射装配失败（本次不给表）：%s: %s", paper_id, exc)
+            return None
+        if len(hits) == 1:
+            it = hits[0]
+            return {"id": it.get("id"), "page": it.get("page"), "number": it.get("number"),
+                    "caption": it.get("caption"), "caption_original": it.get("caption_original"),
+                    "markdown": it.get("markdown"), "rows": it.get("rows"),
+                    "cols": it.get("cols"), "source": it.get("source")}
+    return None
+
+
 # --------------------------------------------------------------------------
 # 阅读进度（服务端权威，规划 §10 ⑧）
 # --------------------------------------------------------------------------
@@ -2008,6 +2063,9 @@ def block_detail(paper_id: str, block_id: str) -> dict:
             # 图注行就是插图的锚点（`figures_payload` 的 block_id 取的正是行 id），
             # 所以行回退这条路必须同样带 figure —— 否则浮窗里"图注有、图没有"的老毛病还在。
             row["figure"] = _figure_for(paper_id, block_id)
+            # 表注行同理：表格的锚点在表体那一行，这里按「同页 + 表号」把表带上（唯一候选才算）
+            row["table"] = _table_for(paper_id, row.get("page") or 0,
+                                      row.get("text") or "", row.get("translation") or "")
             return row
         if b.paper_id != paper_id:
             # 归属校验照旧（单独一支）：块存在、但不是这篇的 —— **不许**借行回退交出去
@@ -2024,4 +2082,8 @@ def block_detail(paper_id: str, block_id: str) -> dict:
             # 新增字段只加在**末尾**（原有字段与顺序不动，见 tests/test_reader_block_detail_rows.py
             # 那条钉字段顺序的断言）；对不上插图时是 None，不按页猜。
             "figure": _figure_for(paper_id, b.id),
+            # 表格同理加在末尾（表注块与表体块都会命中：表号从这一块的文字里认）
+            "table": _table_for(paper_id, b.page_no,
+                                md_map.get(b.id, {}).get("text", b.preview or ""),
+                                md_map.get(b.id, {}).get("translation", "")),
         }

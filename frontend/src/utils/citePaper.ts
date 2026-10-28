@@ -142,6 +142,16 @@ export interface BlockDetailLike {
     caption?: string | null;
     caption_zh?: string | null;
   } | null;
+  /** 表格块 / **表注行**带回来的那张表（后端新加的键）：只有「同页 + 表号相同且唯一」时才有，
+   *  否则是 null 或没这个键 —— 表注行与表体行在页产物里是两行，引用常落在表注那行。 */
+  table?: {
+    markdown?: string | null;
+    number?: string | null;
+    caption?: string | null;
+    caption_original?: string | null;
+    rows?: number | null;
+    cols?: number | null;
+  } | null;
 }
 
 export interface PeekBlockFields {
@@ -155,6 +165,11 @@ export interface PeekBlockFields {
   latex: string;
   /** 图注（后端 figure.caption_zh → figure.caption；两者都没有时退回 Markdown 图片的 alt） */
   caption: string;
+  /** 图注的**原文**那一份（`figure.caption`）：卡片按当前语言在 caption / captionEn 之间选，
+   *  否则中文图注永远挂在那儿、和英文正文一起显示（用户 2026-12-28 的截图就是这张）。 */
+  captionEn: string;
+  /** 表格的 Markdown（只有表注行 / 表体行带 table 时才有）：卡片里画成真表格，不是一句表注 */
+  table: string;
   /** 插图地址（后端 figure.image_url；没有时退回 Markdown 图片的 src。模板照旧走 `assetUrl`） */
   imageUrl: string;
   page: number;
@@ -204,11 +219,17 @@ export function blockPeekFields(detail: BlockDetailLike | null | undefined): Pee
      直接比字符串对不上。归一之后相等就把它从正文里去掉 —— 否则卡片里同一句话
      在「图注」与「正文」各出现一遍（实测跨篇插图卡就是这样重复的）。 */
   const flat = (s: string): string => String(s || '').replace(/[*_`]/g, '').replace(/\s+/g, '').trim();
+  const captionEn = String(d.figure?.caption ?? '').trim();
   const dedupeCaption = (): void => {
     const c = flat(caption);
-    if (!c) return;
-    if (flat(zh) === c) zh = '';
-    if (flat(en) === c) en = '';
+    if (c) {
+      if (flat(zh) === c) zh = '';
+      if (flat(en) === c) en = '';
+    }
+    /* 原文那一份同理：图注块的正文就是图注原文，图注（`caption`/`captionEn`）已经画了，
+       正文再画一次就是「中文图注 + 英文同一句」—— 用户 2026-12-28 的截图正是这张。 */
+    const ce = flat(captionEn);
+    if (ce && flat(en) === ce) en = '';
   };
   const hit = MD_IMG.exec(text);
   if (hit) {
@@ -227,6 +248,8 @@ export function blockPeekFields(detail: BlockDetailLike | null | undefined): Pee
     en,
     latex: formulaLatexOf(d.formula),
     caption,
+    captionEn,
+    table: String(d.table?.markdown ?? '').trim(),
     imageUrl,
     page: Number(d.page ?? 0) || 0,
   };

@@ -3623,27 +3623,60 @@ async function run() {
     await until(d, (x) => x.querySelector('.chat .md p'), 80);
     const box = d.querySelector('.chat .md') || d.querySelector('.chat');
     if (!box) { res.error = "对话面板里没有消息容器"; out(res); return; }
-    const btn = d.createElement('button');
-    btn.type = 'button';
-    btn.className = 'cite-inline cite-mark __probe';
-    btn.setAttribute('data-ref', '99');
-    btn.setAttribute('data-paper', '__PAPER__');
-    btn.setAttribute('data-row', '');
-    btn.setAttribute('data-block', '');
-    btn.textContent = '[99]';
-    box.appendChild(btn);
-    await sleep(200);
-    btn.dispatchEvent(new w.PointerEvent('pointerover', { bubbles: true }));
-    await until(d, (x) => x.querySelector('[data-cite-peek]'), 80);
-    await sleep(700);
-    const card = d.querySelector('[data-cite-peek]');
-    if (!card) { res.error = '没弹出速览卡'; out(res); return; }
-    res.text = clean(card.textContent);
-    const noteEl = card.querySelector('.tiny.faint');
-    res.note = noteEl ? clean(noteEl.textContent) : '';
-    const bodyEl = card.querySelector('.cite-peek-md');
-    res.bodyLen = bodyEl ? clean(bodyEl.textContent).length : 0;
-    btn.remove();
+    /* 注入一枚引用标号 + 悬浮 -> 拿回速览卡（不写库、不调模型） */
+    const hover = async (attrs) => {
+      const prev = d.querySelector('button.__probe');
+      if (prev) prev.remove();
+      const b = d.createElement('button');
+      b.type = 'button';
+      b.className = 'cite-inline cite-mark __probe';
+      b.setAttribute('data-ref', '99');
+      for (const k of Object.keys(attrs)) b.setAttribute(k, attrs[k]);
+      b.textContent = '[99]';
+      box.appendChild(b);
+      await sleep(200);
+      b.dispatchEvent(new w.PointerEvent('pointerover', { bubbles: true }));
+      await until(d, (x) => x.querySelector('[data-cite-peek]'), 80);
+      await sleep(700);
+      return { btn: b, card: d.querySelector('[data-cite-peek]') };
+    };
+    const peek = async (attrs) => {
+      const got = await hover(attrs);
+      const card = got.card;
+      if (!card) return { card: null };
+      const bodyEl = card.querySelector('.cite-peek-md');
+      const noteEl = card.querySelector('.tiny.faint');
+      const tbl = card.querySelector('.cite-peek-table table');
+      const snap = {
+        card: true,
+        text: clean(card.textContent),
+        note: noteEl ? clean(noteEl.textContent) : '',
+        bodyLen: bodyEl ? clean(bodyEl.textContent).length : 0,
+        hasTable: Boolean(tbl),
+        cols: tbl ? tbl.querySelectorAll('tr')[0].children.length : 0,
+      };
+      if (got.btn) got.btn.remove();
+      return snap;
+    };
+    /* (1) 论文级引用（只有 paper_id） */
+    Object.assign(res, await peek({ 'data-paper': '__PAPER__', 'data-row': '', 'data-block': '' }));
+    /* (2) 表格引用：引用落在**表注行**时，卡片里必须画出表体 */
+    res.table = await peek({ 'data-paper': '__PAPER__', 'data-row': '__TABLE_ROW__' });
+    /* (3) 插图引用：中文侧只能有中文图注，英文侧只能有英文图注 */
+    const fig = await hover({ 'data-paper': '__PAPER__', 'data-row': '__FIG_ROW__' });
+    if (fig.card) {
+      res.figZh = clean(fig.card.textContent);
+      const enBtn = [...fig.card.querySelectorAll('.cite-peek-lang button')]
+        .find((b) => clean(b.textContent) === '英');
+      if (enBtn) {
+        enBtn.click();
+        await sleep(400);
+        res.figEn = clean(fig.card.textContent);
+      }
+      fig.card.querySelectorAll('.fc-btn').forEach((b) => b.click());
+      await sleep(300);
+    }
+    if (fig.btn) fig.btn.remove();
   } catch (e) {
     res.stage = "error";
     res.error = String((e && e.message) || e);
@@ -3661,8 +3694,12 @@ def check_paper_peek(browser: str, base: str, paper: str, budget_ms: int) -> Non
     """
     print("\n⑧ 论文级引用的速览卡（只有 paper_id → 论文档案，而不是「没给块 id」）")
     url = f"{base}/cylit/reader/{paper}?side=chat&view=bilingual&nosse=1"
+    # 表格 / 插图那两条要**具体行 id**：这里用 Attention 那篇的真实锚点（表注行 p006-00、图注行
+    # p003-00）。换 --paper 时它们自然量不到，断言会如实报"没画出表/没切语言"，不静默通过。
     html = (PROBE_PAPERPEEK.replace("__URL__", url).replace("__TITLE__", "paperpeek")
-            .replace("__PAPER__", paper))
+            .replace("__PAPER__", paper)
+            .replace("__TABLE_ROW__", "p006-00")
+            .replace("__FIG_ROW__", "p003-00"))
     res = run_probe(browser, base, "probe_paperpeek", html, max(budget_ms, 60_000))
     if not res:
         record("paperpeek", "论文级引用的速览卡能打开（探针拿到结果）", False, "探针没产出结果")
@@ -3681,6 +3718,20 @@ def check_paper_peek(browser: str, base: str, paper: str, budget_ms: int) -> Non
     record("paperpeek", "不再落「这条引用没给可取原文的块 id」",
            "没给可取原文的块 id" not in ((res.get("note") or "") + (res.get("text") or "")),
            f"说明={res.get('note') or '（无）'}")
+    tbl = res.get("table") or {}
+    record("paperpeek", "引用落在**表注行**时卡片画出表体（不是只剩一句表注）",
+           tbl.get("hasTable") is True and (tbl.get("cols") or 0) >= 3,
+           f"表格={tbl.get('hasTable')}，{tbl.get('cols')} 列｜{str(tbl.get('text'))[:34]}")
+    record("paperpeek", "表格卡里正文不再重复画同一张表",
+           (tbl.get("bodyLen") or 0) <= 200, f"正文 {tbl.get('bodyLen')} 字")
+    fig_zh = res.get("figZh") or ""
+    fig_en = res.get("figEn") or ""
+    record("paperpeek", "插图卡中文侧**只**有中文图注（不再中英各一句）",
+           ("图 1" in fig_zh) and ("Figure 1:" not in fig_zh),
+           f"中文侧={fig_zh[:36]}")
+    record("paperpeek", "插图卡英文侧**只**有英文图注（开关真的切了语言）",
+           ("Figure 1:" in fig_en) and ("图 1：" not in fig_en),
+           f"英文侧={fig_en[:36]}")
 
 def check_notes_page(browser: str, base: str, paper: str, budget_ms: int) -> None:
     """笔记整页：三类记录归并成一个列表 + 缩略显示 + 编辑入口（造的数据验完自删）。"""

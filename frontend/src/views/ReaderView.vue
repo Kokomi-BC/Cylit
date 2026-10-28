@@ -295,11 +295,17 @@ function foreignPeekView(ask: CitePeekAsk, target: ReturnType<typeof citeBlockTa
   /* 取不到正文时用引用自带的一两句兜底（与同篇同一条口径：先去掉没闭合的数学定界符） */
   const snippetRaw = trimUnclosedMath(String(ask.snippet || '').trim()
     .replace(/^公式\s*\S*?\s*[:：]\s*/, ''));
-  const zh = String(fields?.zh || snippetRaw).trim();
-  const en = String(fields?.en || snippetRaw).trim();
+  /* 取到了块内容就**不再**拿引用自带的 snippet 兜底：图注块会把两侧都吃掉（中文图注被
+     去重、英文正文本来就是图注原文），那时 snippet 又是同一句 —— 卡片于是「中文图注 +
+     英文同一句」并排，中/英开关怎么点都一样（用户 2026-12-28 的截图）。 */
+  const zh = String(fields ? fields.zh || '' : snippetRaw).trim();
+  const en = String(fields ? fields.en || '' : snippetRaw).trim();
   /* 那一侧为空时退回另一侧（别篇还没翻译时，中文侧是空的 —— 卡片该显示英文原文，
      而不是一句「没有可显示的内容」） */
-  const body = lang === 'en' ? (en || zh) : (zh || en);
+  /* 有图注时**不再跨语言兜底**：图注已经把这一块的文字表达完了（中文图注 / 英文原文各一份），
+     再回退另一侧就等于同一句在两种语言里各来一遍。没有图注（普通段落、未翻译的页）才回退。 */
+  const hasCaption = Boolean((fields?.caption || '').trim() || (fields?.captionEn || '').trim());
+  const body = lang === 'en' ? (en || (hasCaption ? '' : zh)) : (zh || (hasCaption ? '' : en));
   const src = paperTitle(target.paperId) || target.paperId;
   let note = '';
   if (!fields && busy) note = `正在从《${src}》读取这一段…`;
@@ -307,14 +313,28 @@ function foreignPeekView(ask: CitePeekAsk, target: ReturnType<typeof citeBlockTa
   else if (!fields && !target.url) note = `这条引用没给可取原文的块 id —— 点「定位到原文」到《${src}》里看`;
   else if (!fields) note = `这一段在《${src}》里没有可显示的内容`;
   else if (!body && !fields.latex && !fields.caption && !fields.imageUrl) note = `这一段在《${src}》里没有可显示的内容`;
+  /* 图注跟着**当前语言**选：中文侧本来只画 caption_zh，英文侧要换 caption（原文）——
+     否则同一个句子里中英各来一遍，开关还不起作用。 */
+  const capZh = String(fields?.caption || '').trim();
+  const capEn = String(fields?.captionEn || '').trim();
+  const caption = lang === 'en' ? (capEn || capZh) : (capZh || capEn);
+  const table = String(fields?.table || '').trim();
+  /* 正文若就是那张表本身（直接引用表体行时就是这样）：表格块已经画了，正文不再画一遍 */
+  const flatAll = (s: string) => s.replace(/\s+/g, '');
+  const bodyDup = Boolean(table) && Boolean(body) && flatAll(body).includes(flatAll(table));
+  const kind = table ? '表格' : (CITE_KIND[fields?.type || ''] || '正文');
   return {
-    title: (page ? '第 ' + page + ' 页 · ' : '') + (CITE_KIND[fields?.type || ''] || '正文'),
+    title: (page ? '第 ' + page + ' 页 · ' : '') + kind,
     zh,
     en,
-    bilingual: Boolean(zh) && Boolean(en) && zh !== en,
-    body,
+    /* 图注本身有两种语言时也算"可切换"：图注块的两侧会被去重吃光（正文空），
+       此时开关管的正是那句图注，而不是正文。 */
+    bilingual: (Boolean(zh) && Boolean(en) && zh !== en)
+      || (Boolean(capZh) && Boolean(capEn) && capZh !== capEn),
+    body: bodyDup ? '' : body,
     imageUrl: fields?.imageUrl || '',
-    caption: fields?.caption || '',
+    caption,
+    table,
     latex: fields?.latex || String(ask.latex || '').trim(),
     page,
     rowId: String(ask.rowId || ''),
@@ -413,6 +433,7 @@ function briefPeekView(card: PeekCard) {
     body,
     imageUrl: '',
     caption: '',
+    table: '',
     latex: '',
     page: 0,
     rowId: '',
@@ -522,6 +543,24 @@ function trimUnclosedMath(text: string): string {
   return out.trim();
 }
 
+/** 这一行对应的那张表：**先认行 id 精确相等**，认不出再按「同页 + 表号相同且唯一」找一次。
+ *
+ *  为什么要有第二次：表格的**表注行**与**表体行**在页产物里是两行（实测 attention 第 6 页：
+ *  `p006-00` 是表注、`p006-01` 才是表体），而 agent 引用表格时给的是表注那一行 —— 只认行 id
+ *  就只剩一句「表 1：…」，表格本体不出现（用户 2026-12-28：「只有表注」）。
+ *  表号从这一行自己的文字里认，且候选必须唯一；同页两张同号（跨页拆表）就都不给。 */
+function tableForRow(row: PageRow | undefined) {
+  if (!row) return undefined;
+  const direct = tables.value.find((t) => t.row_id === row.id);
+  if (direct) return direct;
+  const m = /^\s*(?:\*\*|__)?\s*(?:表|Table)\s*([0-9]{1,3}[a-zA-Z]?)/i
+    .exec(String(row.translation || row.original || ''));
+  if (!m) return undefined;
+  const hits = tables.value.filter((t) => Number(t.page) === Number(row.page)
+    && String(t.number) === m[1]);
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
 /** 一张卡要显示什么：整篇的行 / 表格 / 插图三选一（引用自带的 snippet 不参与） */
 function peekViewOf(card: PeekCard) {
   const ask = card.ask;
@@ -534,7 +573,7 @@ function peekViewOf(card: PeekCard) {
     || (ask.blockId ? String(reader.value?.block_rows?.[rowAnchorId(String(ask.blockId))] ?? '') : '');
   const row = rowId ? rowById.value.get(rowId) : undefined;
   const fig = rowId ? figures.value.find((f) => f.row_id === rowId) : undefined;
-  const tbl = rowId ? tables.value.find((t) => t.row_id === rowId) : undefined;
+  const tbl = tableForRow(row);
   const page = row?.page ?? ask.page ?? fig?.page ?? tbl?.page ?? 0;
   /* 这一条引用覆盖的**整段行**（后端的 `pids`，按论文顺序）。
    *
@@ -603,7 +642,14 @@ function peekViewOf(card: PeekCard) {
      剩下的文字会被当成一条 display 公式，卡片里就是一坨 LaTeX 原文 */
   const zh = (tbl?.markdown || spanJoin((r) => r.translation) || row?.translation || snippetRaw).trim();
   const en = (tbl?.markdown || spanJoin((r) => r.original) || row?.original || snippetRaw).trim();
-  const caption = (fig?.caption_zh || fig?.caption || '').trim();
+  /* 图注跟着**当前语言**选（用户 2026-12-28：中文图注 + 英文正文一起显示）：
+     中文侧取 caption_zh（没有就退原文），英文侧取 caption（没有就退中文）。 */
+  const capPick = (zh2?: string | null, en2?: string | null) => String(card.lang === 'en'
+    ? (en2 || zh2 || '') : (zh2 || en2 || '')).trim();
+  /* 图注优先；没有图但有表时用**表自己的说明**（表格条目的 caption / caption_original） */
+  const caption = (fig
+    ? capPick(fig.caption_zh, fig.caption)
+    : (tbl ? capPick(tbl.caption, tbl.caption_original) : '')).trim();
   /*
    * 插图：**图注只出现一次**（用户口径 2026-12-04：图注显示了两遍）。
    *
@@ -615,8 +661,12 @@ function peekViewOf(card: PeekCard) {
   const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase();
   const sameAsCaption = (text: string) => Boolean(caption) && Boolean(text)
     && (norm(text) === norm(caption) || norm(text).includes(norm(caption)));
-  const bodyZh = sameAsCaption(zh) ? '' : zh;
-  const bodyEn = sameAsCaption(en) ? '' : en;
+  /* 表格卡：表体由上面那块单独画；正文若也是**同一张表**（行译文就是那张表时）就不再画一遍。 */
+  const tableMd = String(tbl?.markdown || '').trim();
+  const sameAsTable = (text: string) => Boolean(tableMd) && Boolean(text)
+    && (norm(text) === norm(tableMd) || norm(text).includes(norm(tableMd)));
+  const bodyZh = sameAsCaption(zh) || sameAsTable(zh) ? '' : zh;
+  const bodyEn = sameAsCaption(en) || sameAsTable(en) ? '' : en;
   /*
    * 「引用片段」：同一行里的两条引用（例如 60=段落、61=其中的公式）会因为**落点相同**而
    * 显出完全一样的内容（用户口径 2026-12-04）。引用自带的那一段正好能区分它们：
@@ -671,11 +721,16 @@ function peekViewOf(card: PeekCard) {
     title: page ? '第 ' + page + ' 页 · ' + kind : kind,
     zh: showZh,
     en: showEn,
-    /* 只有原文（未翻译的页 / 只有英文的材料）时，别让中/EN 切换出现 */
-    bilingual: Boolean(showZh) && Boolean(showEn) && showZh !== showEn,
+    /* 只有原文（未翻译的页 / 只有英文的材料）时，别让中/EN 切换出现；
+       图注中英两份时也算可切换（开关管的正是那句图注）。 */
+    bilingual: (Boolean(showZh) && Boolean(showEn) && showZh !== showEn)
+      || (Boolean(fig?.caption_zh) && Boolean(fig?.caption)
+          && String(fig?.caption_zh) !== String(fig?.caption)),
     body: card.lang === 'en' ? showEn : showZh,
     imageUrl: fig?.image_url || '',
     caption,
+    /** 表格本体（行 id 或「同页 + 表号」认出来的那一张）：卡片里画真表格，而不是只有表注 */
+    table: String(tbl?.markdown || '').trim(),
     latex,
     page, rowId,
     anchor: ask.anchor,
@@ -9881,7 +9936,7 @@ function renderMarkdown(text?: string | null) {
       :anchored="card.pinned"
       :style="{ zIndex: card.z }"
       hide-anchor
-      :width="360"
+      :width="peekViewOf(card).table ? 560 : 360"
       :max-height="420"
       text-cat="chat"
       data-cite-peek
@@ -9926,6 +9981,9 @@ function renderMarkdown(text?: string | null) {
         <!-- 这条引用具体指向哪一句 / 哪条公式：同一行里的两条引用靠它区分 -->
         <div v-if="peekViewOf(card).latex" class="cite-peek-quote cite-peek-formula md small"
              v-html="mdToHtml('$$' + peekViewOf(card).latex + '$$', peekViewOf(card).paperId)" />
+        <!-- 表格本体：横向可滚（列多的表在 360px 里读不了），整表只在卡片里出现一次 -->
+        <div v-if="peekViewOf(card).table" class="cite-peek-table md small"
+             v-html="mdToHtml(peekViewOf(card).table, peekViewOf(card).paperId)" />
 
         <div v-if="peekViewOf(card).body" class="cite-peek-md md small"
              v-html="mdToHtml(peekViewOf(card).body, peekViewOf(card).paperId)" />
@@ -10381,6 +10439,9 @@ function renderMarkdown(text?: string | null) {
 }
 .cite-peek-cap { color: var(--text-dim); }
 .cite-peek-md { max-height: 190px; overflow: auto; }
+/* 表格卡：横向滚动（列多时整表也读得下来），纵向给高一点但仍夹住 */
+.cite-peek-table { max-height: 300px; overflow: auto; }
+.cite-peek-table :deep(table) { margin: 0; }
 /* 同一条规则也用在速览卡里：卡片更窄，行内公式压住上一行的括号只会更明显 */
 .cite-peek-md :deep(.katex) { display: inline-block; }
 /* 速览卡里渲染的是**原文/译文的一段**，其中可能带章节标题：卡片宽 360、正文 12px，
