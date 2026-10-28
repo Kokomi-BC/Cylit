@@ -958,6 +958,9 @@ table.data.fixed { table-layout: fixed; }
   max-width: min(100%, 560px); max-height: min(48vh, 420px); height: auto;
   background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
+/* 裂图被换成「链接 + 一句提示」之后（见 utils/mdImages.ts）：那就是**普通行内文字**，
+   别再吃上面那条的块级留白 —— 不留空隙、不撑出空行，紧贴在原来那张图的位置上。 */
+.md .md-img-link, .md .md-img-fallback, .md .md-img-hint { display: inline; margin: 0; padding: 0; }
 .md .katex-display { margin: .4em 0; overflow-x: auto; overflow-y: hidden; }
 /* **整块公式比一栏还宽**时：编号是绝对定位到 `.katex-html` 的 `right: 0`，而 `.katex` 默认跟着
    栏宽走 —— 编号于是骑在公式尾巴上（用户口径 2026-12-05 的

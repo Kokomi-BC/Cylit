@@ -22,6 +22,7 @@ import { postSse } from '@/api/stream';
 import { withNoteRefs } from '@/utils/noteRefs';
 import { renderedLength } from '@/utils/latexText';
 import { mdToHtml, inlineHtml } from '@/composables/useMarkdown';
+import { watchAnswerImages } from '@/utils/mdImages';
 import { reportError, toast } from '@/stores/app';
 import { askConfirm } from '@/stores/confirm';
 import { debounce, fmtDate, fmtRelative, truncate } from '@/utils/format';
@@ -1960,6 +1961,19 @@ watch(msgsEl, (el) => {
   msgsMO.observe(el, { childList: true, subtree: true, characterData: true });
 });
 
+/** 回答里的**图片加固**（见 utils/mdImages.ts）：站外图不让它把 referrer / IP 送出去，
+ *  裂图换成一条能点开的链接。
+ *
+ *  只认 `.md body`（答案正文的两个渲染点：流式的 `.md body md-part` 与完成态的 `.md body`），
+ *  所以阅读器正文、PDF 页图、裁图卡片一张都不受影响。
+ *  为什么挂观察器而不是 `watch(messages) + nextTick`：正文是**按块** `v-html` 的，流式时只有最后
+ *  一块在重设 innerHTML —— 观察器接得住"这一批新增的图"，watch 只会在整条消息变化时跑一次。 */
+let stopImgWatch: (() => void) | null = null;
+watch(msgsEl, (el) => {
+  stopImgWatch?.();
+  stopImgWatch = watchAnswerImages(el);
+});
+
 let msgsSaveTimer = 0;
 function onMsgsScroll() {
   const box = msgsEl.value;
@@ -3382,6 +3396,8 @@ onUnmounted(() => {
   controller?.abort();
   composerRO?.disconnect();
   msgsMO?.disconnect();
+  stopImgWatch?.();
+  stopImgWatch = null;
   window.removeEventListener('resize', onViewportResize);
   if (stickRaf) { cancelAnimationFrame(stickRaf); stickRaf = 0; }
   window.removeEventListener('keydown', onMenuKeydown);
