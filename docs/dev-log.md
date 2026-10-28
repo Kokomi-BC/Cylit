@@ -17312,3 +17312,46 @@ vue-tsc + build 绿；frontend_check 169 项全过
 编译产物核对：.toast{…border:0…backdrop-filter:blur(48px) saturate(2.6)}；3500 / 5000 / 6100 三档都在
 进出场动画仍在：enter opacity 220ms + transform 260ms、leave 260ms、move 260ms；reduced-motion 压成 1ms
 ```
+
+# 266 · 跨论文引用：浮窗能读那篇、能跳过去（2026-12-28 追补十一）
+
+用户要求：① 跨论文的引用能跳转；② 浮窗能读取并显示跨论文内容。
+
+以前前端对别篇引用是「一句 toast + return」：浮窗不开、跳转也不去（`ReaderChat.gotoCitation` 与
+`onCitationClick` 各判一遍，两处都只 toast）。抽成 `frontend/src/utils/citePaper.ts` 之后三个调用点问同一枚函数。
+
+## 三处必须做对的地方（都是把链路走一遍才发现的）
+
+1. **段 id 要 `block_id || row_id`**：agent 读页级转录行时引用里 `block_id` 为空、`row_id` 是 `p002-00`。
+   只看 `block_id` → 这一类引用**一个请求都不发**（卡片只剩引用自带的 snippet，还误报「没有可取原文的块 id」）。
+2. **缓存键必须带 `paper_id`**：`p002-00` 这种行 id 每篇论文都长一样，只按段 id 缓存会把 A 篇的内容显示给 B。
+3. **后端 `block_detail` 要能解析行 id**：它原来只按 `Block.id` 查库，`/blocks/p002-00` 直接 404。
+   现在块表查不到时按 `p<页码>-<序号>` 去那一页的行里**精确匹配**（复用 `group_refs.row_pair` 与
+   `_rows_of_page`，不另写正则、不另取正文）；「块存在但属于别篇」单列一支直接 404，不让同名行 id 绕过归属校验。
+
+## 现在的行为
+
+- 浮窗：别篇按 `GET /papers/{pid}/blocks/{段 id}` 现取（`paper_id::段 id` 缓存，悬浮多次只打一次），
+  标题栏加「来自《…》」，中/英切换可用，markdown 用**那条引用自己的** paper_id 渲染；
+- 跳转：`openTab(readerTarget(pid, 锚点, 页))`，尽力到块、保底到页；同篇那行一字未改。
+
+## 实测（本机真库 + 真 DOM，不是看代码）
+
+造一条临时会话：`[1]` 指向别篇的**块**、`[2]` 指向别篇的**行**。
+
+```
+[1] 浮窗标题「第 2 页 · 段落 · 来自《Attention Is All Y…》」，正文 = 别篇第 2 页段落
+[2] 浮窗正文 = 别篇第 2 页的中文译文（「此后，众多工作持续拓展循环语言模型与编码器-解码器架构的边界 [38, 24, 15]。」）
+    —— 显示的是译文而不是引用里那句英文 snippet，证明内容来自后端而非兜底
+点定位按钮 → 新开标签页《Attention Is All You Need》并落在第 2 页（正文里那一段正被高亮）
+prod：/blocks/attentioncle-p01-b01 → 200；/blocks/p002-00 → 200（回退生效）；/blocks/p099-99 → 404（护栏在）
+验完删掉临时会话，库里恢复 43 会话 / 113 消息；全量 pytest 2027 passed / 0 failed；frontend_check 169 项全过
+```
+
+## 代价与遗留
+
+- 跨篇的**插图引用只有文字/图注，没有缩略图**：`block_detail` 只给 text/translation/formula，没有 `image_url`，
+  而 `/figures/region/{page}/{index}` 需要 index —— 块侧拿不到这个映射，要补得先把 figure 的 index 带进 block payload。
+- 跨篇没有块到行的映射（手里没有那篇的 `block_rows`），跳转能到哪一级取决于目标阅读器加载后再解析；
+  深链同时给 `?row=&page=`，最差落在那一页。
+- 别篇的公式卡没做 `onlyFormula` 去重：公式块的 text 若本身就是行间公式，可能与上方 latex 区各显示一遍。
