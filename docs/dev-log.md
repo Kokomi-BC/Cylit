@@ -16623,3 +16623,46 @@ anyOffScreen = false（改前有一例 bottom=876 > 820）
 二级距一级右边缘 gapFromRoot = 1px（贴住）；距那一行右边缘 4px
 垂直方向：列表高 181 > 那一行以下的空间，所以被上移到 y=631（不越出视口）
 ```
+---
+
+# 253 · 「没看出毛玻璃」的真相：背后是**输入区那层不透明的底**（2026-12-27）
+
+用户报：模型菜单**看不出毛玻璃**（上一轮已经把 `.glass-menu` 挂上去了）。
+
+## 先证明玻璃本体没坏
+
+单独做一个对照页：黑白条纹上盖一块 `backdrop-filter: blur(12px)` + 55% 白的方块 ——
+截图里条纹在方块内部**变成一片均匀灰**（条纹被糊掉了），说明无头 Chrome 确实在做 backdrop-filter。
+再看菜单的实测计算值：`background-image: linear-gradient(srgb 1 1 1 / .6 → .48)`、`backdrop-filter: blur(48px) saturate(2.6)`、
+无描边 —— 材质一直是生效的。
+
+## 那为什么看不见
+
+模型菜单原来挂在 `.composer` **里面**，而 `.composer` 自带一层**不透明**的底：
+
+```
+.composer { background: linear-gradient(to top, var(--bg-elev) 0%, var(--bg-elev) 58%, …) }
+```
+
+`backdrop-filter` 采样的是**它背后已经画出来的东西** —— 那里只有输入区那层纯白，
+白模糊白还是白。所以无论把不透明度调到多低，这个位置上永远没有玻璃感（8% 的极端对照截图同样是纯白）。
+
+## 改法（两处）
+
+1. **根浮层也传送到 body**（和二级菜单一样）：`position: fixed` + `placePickPop()` 按触发钮算坐标。
+   留在 `.composer` 里，它的 backdrop 只能是那层白底。
+2. **纵向锚到输入区上沿之上**：`top = min(输入区 top - 6 - h, 按钮 top - 5 - h)`。
+   贴着按钮弹时整块都压在那层白底上；退到输入区上沿之上，背后就是**消息正文**，玻璃才看得见。
+
+## 实测
+
+```
+传送后 DOM   parent = BODY，position: fixed，left/top 由 placePickPop 写（14 / 707）、z 用 subZOf 算
+落在输入区上沿之上后截图 data/logs/pickmenu8.png：菜单背后能看到**被糊开的正文**（灰影透上来）
+对照 data/logs/pickmenu7.png（手工把菜单挪到正文上方）：同样能看到文字被模糊后透过来
+```
+
+## 代价（说清楚）
+
+这条会让菜单与触发钮之间隔出一段输入区的高度（按钮在输入区最底下）。玻璃可见性与"贴着按钮"
+这两件事在这个位置上是互斥的 —— 选了前者。要退回贴着按钮，把 `placePickPop` 里那两行 `hostTop` 去掉即可。

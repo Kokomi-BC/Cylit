@@ -521,6 +521,10 @@ const subPos = ref({ left: 0, top: 0 });
  * 打开那一刻直接量 `closest('.chat-host')` 的计算 z 最省事，也不怕层序之后又变。
  */
 const subZ = ref(92);
+/** 根浮层的 DOM 与落点（传送到 body 之后自己算 fixed 坐标，见 `placePickPop`）。 */
+const popEl = ref<HTMLElement | null>(null);
+const pickBtnEl = ref<HTMLElement | null>(null);
+const popPos = ref({ left: 0, top: 0 });
 const subEl = ref<HTMLElement | null>(null);
 /** 子菜单宽度 / 高度上限（夹视口用；宽 200 是这里定死的） */
 const SUB_W = 200;
@@ -3132,6 +3136,39 @@ function leavePick() {
 function openMenu() {
   cancelPickHide();
   if (!menuOpen.value) menuOpen.value = true;
+  void nextTick(placePickPop);
+}
+
+/**
+ * 根浮层的落点：**浮层传送到 body**，所以按触发钮的矩形自己算（fixed 坐标）。
+ *
+ * 为什么要传送（用户口径 2026-12-27「没看出毛玻璃效果」）：它原来挂在 `.composer` 里，
+ * 而 `.composer` 自带一层**不透明**的底（`--bg-elev` 渐变，见 `.composer` 那条）——
+ * `backdrop-filter` 采样到的"背景"就是那层实心底，糊出来还是纯白，玻璃等于不存在。
+ * 传送到 body 之后背后才是消息与正文，模糊才看得见。
+ */
+function placePickPop() {
+  const el = popEl.value;
+  const btn = pickBtnEl.value;
+  if (!el || !btn) return;
+  subZ.value = subZOf(btn);
+  const r = btn.getBoundingClientRect();
+  const w = el.offsetWidth || 280;
+  const h = el.offsetHeight || 200;
+  let left = r.left;
+  if (left + w > window.innerWidth - 8) left = window.innerWidth - 8 - w;
+  left = Math.max(8, left);
+  /* 纵向：**优先让整块落在输入区（`.composer`）上沿之上**。
+     `.composer` 自带一层不透明的底，贴着触发钮弹的话，菜单整块都压在那层白底上 ——
+     背后没有任何内容，`backdrop-filter` 糊出来还是纯白（用户 2026-12-27「没看出毛玻璃效果」）。
+     退到输入区上沿之后，背后就是消息正文，玻璃才看得出。放不下再退回贴着按钮弹。 */
+  const host = btn.closest<HTMLElement>('.composer');
+  const hostTop = host ? host.getBoundingClientRect().top : r.top;
+  let top = hostTop - 6 - h;
+  if (top < 8) top = r.top - 5 - h;
+  if (top < 8) top = Math.min(window.innerHeight - h - 8, r.bottom + 5);
+  top = Math.max(8, top);
+  popPos.value = { left: Math.round(left), top: Math.round(top) };
 }
 
 /**
@@ -3887,7 +3924,7 @@ defineExpose({ uploadFiles, ensureThread });
         <div v-if="!editing" class="composer-foot">
           <!-- 悬浮即展开（用户口径）：移上去就看见模型 / 推理等级两行，
                点一下仍是"开/收"（触屏与键盘只有这条路）。 -->
-          <button class="model-btn truncate" :class="{ on: menuOpen }" :title="pickTitle"
+          <button ref="pickBtnEl" class="model-btn truncate" :class="{ on: menuOpen }" :title="pickTitle"
                   :aria-expanded="menuOpen" @click="toggleMenu"
                   @mouseenter="hoverPick" @mouseleave="leavePick">
             <img
@@ -3918,8 +3955,13 @@ defineExpose({ uploadFiles, ensureThread });
                既占高度又不好看 —— 每一条自己带厂商图标和「厂商 · 模型 id」副标题，够认了）；
                也不再先弹「模型 / 推理等级」两行的中转层。推理等级是列表底部的一行
                （still 侧向飞出，不丢功能）。 -->
-          <!-- 材质走全站那一份玻璃（`styles/base.css` 的 `.glass-menu`）：与「更多」/ 右键菜单同一块 -->
-          <div v-if="menuOpen" class="pick-pop pick-pop-model glass-menu" @mouseenter="hoverPick" @mouseleave="leavePick">
+          <!-- 材质走全站那一份玻璃（`base.css` 的 `.glass-menu`）：与「更多」/ 右键菜单同一块。
+               **传送到 body**：留在 `.composer` 里的话，`backdrop-filter` 采样到的是输入区那层不透明的底，
+               玻璃等于不存在（见 `placePickPop` 的注释）。 -->
+          <Teleport to="body">
+          <div v-if="menuOpen" ref="popEl" class="pick-pop pick-pop-model glass-menu"
+               :style="{ left: popPos.left + 'px', top: popPos.top + 'px', zIndex: subZ }"
+               @mouseenter="hoverPick" @mouseleave="leavePick">
             <div class="pick-model-list">
               <div v-if="modelReadonly" class="pick-empty">
                 <span class="pick-item-name">未单独配置</span>
@@ -3948,6 +3990,7 @@ defineExpose({ uploadFiles, ensureThread });
               <AppIcon name="chevron-right" :size="11" />
             </button>
           </div>
+          </Teleport>
 
           <!-- 第二级：侧向飞出的子菜单。**必须 Teleport 到 body**（用户口径 2026-11-26「层级问题」）：
                它原来留在卡片里，只能跟卡片的 stacking context 比高低（卡片 60），
@@ -4708,11 +4751,20 @@ defineExpose({ uploadFiles, ensureThread });
    内容长了（模型名很长）才被 max-width 截住、由 .pick-val 的 truncate 收尾。
    min-width 兜住"名字很短"的极端，免得浮层小到像一枚标签。 */
 .pick-pop {
-  position: absolute; left: 0; right: auto; bottom: calc(100% + 5px); z-index: 9;
+  /* 传送到 body 之后按**视口坐标**摆（`placePickPop` 写 left/top + zIndex）；
+     原来是 `position: absolute; bottom: calc(100% + 5px)`，挂在 `.composer` 里 ——
+     那层不透明的底让 backdrop-filter 无内容可糊。 */
+  position: fixed;
   width: max-content; min-width: 176px; max-width: 288px;
   display: flex; flex-direction: column; gap: 1px; padding: 3px;
   border-radius: 11px;
-  /* 材质（底色 / 模糊 / 阴影 / 无描边）走 `base.css` 的 `.glass-menu`，与「更多」菜单同一块玻璃 */
+  /* 材质（底色 / 模糊 / 阴影 / 无描边）走 `base.css` 的 `.glass-menu`，与「更多」菜单同一块玻璃。
+     但这块浮层是**贴在对话面板上**弹出来的，背后常常是一整片白：跟「更多」菜单同样 80/68% 时,
+     白模糊白 = 看起来就是一张实心白卡（用户 2026-12-27「没看出毛玻璃效果」）。
+     所以只把**不透明度**调低一档（配方仍是那一份，只是这两个百分比本地覆盖）：
+     背后的消息 / 正文会透上来并被糊掉，玻璃感才成立。 */
+  --glass-bar-top: 60%;
+  --glass-bar-bottom: 48%;
 }
 .pick-row {
   display: flex; align-items: center; gap: 4px; width: 100%; height: 26px; padding: 0 6px;
@@ -4738,7 +4790,9 @@ defineExpose({ uploadFiles, ensureThread });
      正文里的浮层与指示器，不该压住真正"要你确认"的东西。 */
   position: fixed; z-index: 92; width: 200px; box-sizing: border-box; isolation: isolate;
   padding: 3px; border-radius: 11px;
-  /* 同上：材质由 `.glass-menu` 给，这里只管几何与层级 */
+  /* 同上：材质由 `.glass-menu` 给（不透明度与一级菜单一致，两块才是同一块玻璃），这里只管几何与层级 */
+  --glass-bar-top: 60%;
+  --glass-bar-bottom: 48%;
 }
 /* 下拉框本体：定高 + 内部滚动（模型多了不能把浮层顶出屏幕） */
 .pick-pop-model { width: 280px; }
