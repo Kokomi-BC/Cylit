@@ -6,7 +6,8 @@
    把全文塞进检索结果等于把"读哪页"的决定权收走，还会瞬间吃光上下文。
 2. **返回值必须瘦**：不发 `retrieval` 元数据（`vector_hits/fused/rrf_k/rerank`）、不发
    `bbox`、不发内部 id。工具返回里的 `ref` 是**宿主分配的引用编号**，模型只写 `[ref]`。
-3. **`paper_id` 由宿主注入**（deps），工具签名里没有这个参数 —— 模型没有机会传错论文。
+3. **`paper_id` 默认由宿主注入**（deps）：不传就是当前论文，模型没有机会传错；
+   要读**别的论文**时才由它显式传 `paper_id`（见 `_read_target`）。
 4. **失败不是异常，是结果**：主后端报错时返回 ``{"ok": false, "error": ...}``，
    让模型知道"这条路走不通"并换一条，而不是让整个请求 500。
 """
@@ -78,7 +79,6 @@ NOTES_KINDS = ("all", "notes", "highlights", "annotations")
 
 #: `library_list` 一次最多列几条（回执的硬上限，兜底用）
 LIBRARY_LIST_MAX = 50
-LIBRARY_LIST_DEFAULT = 30
 #: `library_list` 的**数据层**每页条数：这里的默认值也是"没改就不往下传"的那一档，
 #: 所以它必须与 `HostClient.library` 的 page_size 默认值相同（tests 里有钉子）。
 LIBRARY_PAGE_DEFAULT = 20
@@ -354,6 +354,19 @@ def _page_label(value: object) -> str:
     return f"第 {_brief_text(text, 20)} 页"
 
 
+def _kb_label(value: object) -> str:
+    """`library_list` 的 `in_kb` 三态人话（只看已入库 / 只看未入库 / 连未入库一起看）。
+
+    与 `_page_label` 一样只做「值 → 人话」：传没传由调用方判（默认值不写）。
+    """
+    if isinstance(value, bool):
+        return "仅已入库" if value else "仅未入库"
+    text = str(value if value is not None else "").strip().lower()
+    if text in ("", "none", "null"):
+        return "含未入库"
+    return "仅未入库" if text in ("false", "0", "no") else "仅已入库"
+
+
 def tool_brief(name: str, args: object) -> str:
     """工具调用的**一句话人话** —— 过程行 `修订产物 · 第 4 页 · …` 里 `·` 后面那截。
 
@@ -451,8 +464,27 @@ def tool_brief(name: str, args: object) -> str:
             count = str(a.get("count") if a.get("count") is not None else "").strip()
             tail = "" if count in ("", "0") else f"{count} 条"
         elif tool == "library_list":
+            # 只写 query 看不出「翻到第几页 / 按哪个分类 / 只看已入库与否」——
+            # 这三个正是模型常改的参数（用户口径：「过程行看不出在干什么」）。
+            # 判据是**入参里有这个键**：模型显式写了，就说明这次真按它筛了；
+            # 没写（= 用签名默认值）就一个字都不占，这一行只有一行的宽度。
+            bits: list[str] = []
+            pager = str(a.get("page") if a.get("page") is not None else "").strip()
+            if pager not in ("", "0", "1"):   # 「第 1 页」是噪音：翻没翻页只看这一位数
+                bits.append(f"第 {_brief_text(pager, 8)} 页")
+            size = str(a.get("page_size") if a.get("page_size") is not None else "").strip()
+            if size not in ("", "0"):
+                bits.append(f"每页 {_brief_text(size, 8)}")
+            folder = str(a.get("folder") or "").strip()
+            if folder:
+                bits.append("分类 未分类" if folder.lower() == "none"
+                            else f"分类 {_brief_text(folder, 12)}")
+            if "in_kb" in a:
+                bits.append(_kb_label(a.get("in_kb")))
             limit = str(a.get("limit") if a.get("limit") is not None else "").strip()
-            tail = "" if limit in ("", "0") else f"{limit} 条"
+            if limit not in ("", "0"):
+                bits.append(f"{_brief_text(limit, 8)} 条")
+            tail = _line(*bits)
         else:
             # scope / kind 是默认值（这一篇、全都要）时不写：写了等于没写
             scope = str(a.get("scope") or "").strip().lower()
@@ -1566,7 +1598,8 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
 # --------------------------------------------------------------------------
 
 
-async def page_image_get(ctx: RunContext[Deps], pages: str, dpi: int = 200):
+async def page_image_get(ctx: RunContext[Deps], pages: str, dpi: int = 200,
+                         paper_id: str | None = None):
     """把整页渲染成图片交给视觉模型看（字面意思：**你自己看这一页**）。
 
     什么时候用：公式的上下标/希腊字母认不准、表格结构看不懂、怀疑解析漏了内容、
@@ -1576,38 +1609,50 @@ async def page_image_get(ctx: RunContext[Deps], pages: str, dpi: int = 200):
       pages —— ``"5"`` / ``"3-4"`` / ``"4,7"``。一次最多 3 页。
       dpi   —— 默认 200（阅读器页图是 150，公式密集的页建议 300~400）。
                注意：**不要**靠放大低 dpi 图来"看得更清"，放大只是插值，信息量没变。
+      paper_id —— 要看**别的论文**的页面图时给它的 id（不传 = 当前论文，行为一字不变）。
+               页码按**那一篇**的页数解析（篇幅不同，第 30 页可能它那儿没有）；
+               回的 ref 属于那一篇。id 不存在就直接报错，不会退回去读当前论文。
     """
     async def _impl():
-        wanted, clipped = parse_pages(pages, total=ctx.deps.page_total,
+        pid, total, bad = await _read_target(ctx, paper_id)
+        if bad is not None:
+            return bad
+        wanted, clipped = parse_pages(pages, total=total,
                                       limit=ctx.deps.cfg.image_max_pages)
         if not wanted:
-            return {"ok": False, "error": pages_error(pages, total=ctx.deps.page_total)}
+            return {"ok": False, "error": pages_error(pages, total=total)}
         use_dpi = max(150, min(int(dpi or 200), ctx.deps.cfg.image_max_dpi))
+        foreign = pid != str(ctx.deps.paper_id or "")
         content: list = []
         got: list[int] = []
         for page_no in wanted:
-            raw, media = await ctx.deps.host.page_image(ctx.deps.paper_id, page_no, use_dpi)
+            raw, media = await ctx.deps.host.page_image(pid, page_no, use_dpi)
             if not raw:
                 continue
             ctx.deps.registry.assign(
-                key=f"page:{page_no}", kind="page", page=page_no,
+                key=f"page:{pid}:{page_no}", kind="page", page=page_no,
                 snippet=_clip(f"第 {page_no} 页页面图（{use_dpi}dpi）"),
-                label=_locate(page_no, None, "page"))
+                label=_locate(page_no, None, "page"), paper_id=pid)
             content.append(BinaryContent(data=raw, media_type=media or "image/png"))
             got.append(page_no)
-            ctx.deps.pages_read.append(page_no)
+            if not foreign:   # 读了别篇的第 5 页不算读过这篇的
+                ctx.deps.pages_read.append(page_no)
         if not got:
             return {"ok": False, "error": f"取不到第 {pages} 页的页面图。"}
         note = (f"已附上第 {'、'.join(map(str, got))} 页的页面图（{use_dpi}dpi）。"
                 + ("页码超出范围，已截断。" if clipped else ""))
         return ToolReturn(return_value=note, content=[note, *content])
 
-    return await _guarded(ctx, "page_image_get",
-                          {"pages": _clip(pages, 40), "dpi": dpi}, _impl())
+    digest = {"pages": _clip(pages, 40), "dpi": dpi}
+    # 不传就不加这个键：老调用（以及轨迹回放）逐字不变
+    if str(paper_id or "").strip():
+        digest["paper_id"] = _clip(paper_id, 40)
+    return await _guarded(ctx, "page_image_get", digest, _impl())
 
 
 async def figure_list(ctx: RunContext[Deps], page: int | None = None,
-                      pages: list[int] | None = None) -> dict:
+                      pages: list[int] | None = None,
+                      paper_id: str | None = None) -> dict:
     """列出某一页（或**一次列好几页**）的插图与表格（编号、图注、可嵌入的受控图片地址）。
 
     什么时候用：要回答"图 3 画了什么 / 表 1 的数字是多少"之前，先看这一页有哪些图形区域。
@@ -1621,10 +1666,12 @@ async def figure_list(ctx: RunContext[Deps], page: int | None = None,
     参数：
       page  —— 单页页码（老用法，照旧）。
       pages —— 一批页码。两种一起给时按「page 在前、pages 在后」合并去重。
+      paper_id —— 要列**别的论文**的图形区域时给它的 id（不传 = 当前论文，行为一字不变）。
+               页码按那一篇算，回的 ref 也属于那一篇；id 不存在就直接报错，不会退回当前论文。
     """
-    async def _one(one_page: int) -> dict:
-        data = await ctx.deps.host.figures(ctx.deps.paper_id, int(one_page))
-        rows = _caption_rows(ctx.deps.paper_id, int(one_page))
+    async def _one(pid: str, one_page: int) -> dict:
+        data = await ctx.deps.host.figures(pid, int(one_page))
+        rows = _caption_rows(pid, int(one_page))
         items = []
         for fig in data.get("items") or []:
             url = fig.get("url") or ""
@@ -1633,7 +1680,8 @@ async def figure_list(ctx: RunContext[Deps], page: int | None = None,
             label = ({"table": "表 ", "algorithm": "算法 "}.get(kind, "图 ")
                      + str(fig.get("number") or "?"))
             cit = ctx.deps.registry.assign(
-                key=f"figure:{one_page}:{fig.get('index')}", kind=kind, page=int(one_page),
+                key=f"figure:{pid}:{one_page}:{fig.get('index')}", kind=kind,
+                page=int(one_page), paper_id=pid,
                 snippet=_clip(fig.get("caption") or "", CAPTION_CHARS),
                 # 图注行的行 id：前端点 `[n]` 才能闪到那一行（模型侧看不到这个 id）
                 row_id=rows.get(str(fig.get("number") or "")),
@@ -1659,17 +1707,20 @@ async def figure_list(ctx: RunContext[Deps], page: int | None = None,
         return out
 
     async def _impl() -> dict:
+        pid, _total, bad = await _read_target(ctx, paper_id)
+        if bad is not None:
+            return bad
         wanted, repeats = _int_list(page, pages)
         if not wanted:
             return {"ok": False,
                     "error": "要给 page 或 pages：pages=[4, 7, 9] 一次看几页的图形区域。"}
         kept, left = _cap_batch(wanted, BATCH_PAGE_MAX)
         if pages is None and len(wanted) == 1:
-            return await _one(kept[0])      # 老用法：单页回执结构一个字都不变
+            return await _one(pid, kept[0])      # 老用法：单页回执结构一个字都不变
         groups: list[dict] = []
         for one in kept:
             try:
-                groups.append(await _one(one))
+                groups.append(await _one(pid, one))
             except HostError as exc:
                 groups.append({"page": one, "returned": 0, "items": [],
                                "ok": False, "error": f"取数失败：{exc.message}"})
@@ -1686,12 +1737,16 @@ async def figure_list(ctx: RunContext[Deps], page: int | None = None,
             out["note"] = " ".join(tips)
         return out
 
-    return await _guarded(ctx, "figure_list", {"page": page, "pages": list(pages or [])}, _impl())
+    digest = {"page": page, "pages": list(pages or [])}
+    if str(paper_id or "").strip():
+        digest["paper_id"] = _clip(paper_id, 40)
+    return await _guarded(ctx, "figure_list", digest, _impl())
 
 
 async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
                             index: int | None = None,
-                            items: list[dict] | None = None):
+                            items: list[dict] | None = None,
+                            paper_id: str | None = None):
     """取一页里某个图形区域的裁图（插图或**表格**，按图注锚定 600dpi）交给视觉模型看。
 
     什么时候用：回答涉及图里的具体细节（曲线趋势、结构图）或**表格里的数字**时。
@@ -1711,16 +1766,18 @@ async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
       page  —— 页码（单条老用法）。
       index —— ``figure_list`` 返回的 index（**不是**图号/表号）。
       items —— 一批区域：``[{"page": 4, "index": 1}, …]``。与 page/index 一起给时合并去重。
+      paper_id —— 要看**别的论文**的图形区域时给它的 id（不传 = 当前论文，行为一字不变）。
+               页码与 index 都按那一篇算，回的 ref 也属于那一篇；id 不存在就直接报错，
+               不会退回去读当前论文。
     """
-    async def _one(one_page: int, one_index: int) -> dict:
-        raw, media = await ctx.deps.host.figure_image(ctx.deps.paper_id, int(one_page),
-                                                      int(one_index))
+    async def _one(pid: str, one_page: int, one_index: int) -> dict:
+        raw, media = await ctx.deps.host.figure_image(pid, int(one_page), int(one_index))
         if not raw:
             return {"page": one_page, "index": one_index, "ok": False,
                     "error": "取不到这个区域的裁图。"}
         kind, number = "figure", ""
         try:                                   # 顺手取编号，让 ref 的标题写成"表 1"而不是"插图 #0"
-            data = await ctx.deps.host.figures(ctx.deps.paper_id, int(one_page))
+            data = await ctx.deps.host.figures(pid, int(one_page))
             hit = next((i for i in (data.get("items") or [])
                         # ⚠️ 别写 `i.get("index") or -1`：序号 0 是 falsy，会被吃成 -1，
                         # 于是第 0 个区域永远匹配不上（踩过：表 1 的 ref 标题退回"图 #0"）
@@ -1732,11 +1789,10 @@ async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
         except Exception as exc:  # noqa: BLE001 —— 拿不到编号不影响看图
             log.debug("取区域编号失败（不影响看图）：%s", exc)
         what = ("表 " if kind == "table" else "图 ") + (number or f"#{one_index}")
-        cit = ctx.deps.registry.assign(key=f"figure_img:{one_page}:{one_index}", kind=kind,
-                                       page=int(one_page),
+        cit = ctx.deps.registry.assign(key=f"figure_img:{pid}:{one_page}:{one_index}",
+                                       kind=kind, page=int(one_page), paper_id=pid,
                                        # 图注行的行 id：前端点 `[n]` 闪到那一行
-                                       row_id=_caption_rows(ctx.deps.paper_id,
-                                                           int(one_page)).get(number),
+                                       row_id=_caption_rows(pid, int(one_page)).get(number),
                                        snippet=_clip(f"第 {one_page} 页 · {what}"),
                                        label=f"第 {one_page} 页 · {what}")
         return {"page": one_page, "index": one_index, "ok": True, "ref": cit.ref,
@@ -1759,6 +1815,9 @@ async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
         return pairs
 
     async def _impl():
+        pid, _total, bad = await _read_target(ctx, paper_id)
+        if bad is not None:
+            return bad
         wanted = _asked()
         if not wanted:
             return {"ok": False,
@@ -1766,7 +1825,7 @@ async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
         kept, left = _cap_batch(wanted, BATCH_FIGURE_MAX)
         if items is None and len(wanted) == 1:
             one_page, one_index = kept[0]
-            got = await _one(one_page, one_index)
+            got = await _one(pid, one_page, one_index)
             if got.get("ok") is not True:
                 return {"ok": False, "error": got.get("error") or "取不到这个区域的裁图。"}
             note = f"已附上第 {one_page} 页的{got['what']}（ref={got['ref']}）。"
@@ -1779,7 +1838,7 @@ async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
         done = failed = 0
         for i, (one_page, one_index) in enumerate(kept, start=1):
             try:
-                got = await _one(one_page, one_index)
+                got = await _one(pid, one_page, one_index)
             except HostError as exc:
                 got = {"page": one_page, "index": one_index, "ok": False,
                        "error": f"取数失败：{exc.message}"}
@@ -1800,9 +1859,10 @@ async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
         note = "\n".join([head, *lines])
         return ToolReturn(return_value=note, content=[note, *content])
 
-    return await _guarded(ctx, "figure_image_get",
-                          {"page": page, "index": index, "items": list(items or [])},
-                          _impl())
+    digest = {"page": page, "index": index, "items": list(items or [])}
+    if str(paper_id or "").strip():
+        digest["paper_id"] = _clip(paper_id, 40)
+    return await _guarded(ctx, "figure_image_get", digest, _impl())
 
 
 # --------------------------------------------------------------------------
@@ -1928,7 +1988,7 @@ def _formula_doc_key(item: dict) -> tuple[int, int, str]:
 
 
 async def _formula_listing(ctx: RunContext[Deps], *, page: int | None, query: str | None,
-                           include_inline: bool) -> tuple[list[dict], dict]:
+                           include_inline: bool, paper_id: str) -> tuple[list[dict], dict]:
     """整份公式列表 + 计数：按 offset 窗口把列表拿全，再按归一化 LaTeX 做跨页合并。
 
     分页要的是**整份列表**（`total` / `missing_pages` / `also_on` 都按全量算），所以这一步
@@ -1937,7 +1997,7 @@ async def _formula_listing(ctx: RunContext[Deps], *, page: int | None, query: st
     宿主的老/新两种回执都在这里收口（见下方注释）：新宿主有 `offset`/`next_offset`/`has_more`，
     老宿主只有 `truncated` + `missing_pages`，后者退回「提示按页补」而不是抛异常。
     """
-    data = await ctx.deps.host.formulas(ctx.deps.paper_id, page=page, query=query,
+    data = await ctx.deps.host.formulas(paper_id, page=page, query=query,
                                         include_inline=include_inline,
                                         offset=0, limit=_FORMULA_FETCH_LIMIT)
     raw_items = [dict(one) for one in (data.get("items") or [])]
@@ -1954,7 +2014,7 @@ async def _formula_listing(ctx: RunContext[Deps], *, page: int | None, query: st
             try:
                 # `page` 必须跟着带上：否则 `page=22` 这种窄查询的第二个窗口会跑到全文去取
                 trailing = await ctx.deps.host.formulas(
-                    ctx.deps.paper_id, page=page, query=query,
+                    paper_id, page=page, query=query,
                     include_inline=include_inline,
                     offset=int(next_offset), limit=_FORMULA_FETCH_LIMIT)
             except HostError as exc:   # 取不满不算失败：照 missing_pages 说清还差哪几页
@@ -2009,7 +2069,8 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                       query: str | None = None,
                       include_inline: bool = False,
                       offset: int = 0,
-                      limit: int = FORMULA_PAGE_DEFAULT) -> dict:
+                      limit: int = FORMULA_PAGE_DEFAULT,
+                      paper_id: str | None = None) -> dict:
     r"""取本论文的**块级公式**（LaTeX + 页码），默认来自该页 Markdown 正文。
 
     什么时候用：用户问某个公式是什么意思、某个符号怎么定义、推导里的某一步；
@@ -2032,6 +2093,9 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                或伪代码里的碎片时才传 True —— 它会把行内公式也列出来，条目更多也更碎。
       offset —— 从第几条开始给（默认 0）；负数按 0 算。
       limit  —— 这一页给几条（默认 40，等于以前那个上限；超出 [1, 200] 会被夹回来）。
+      paper_id —— 要取**别的论文**的公式时给它的 id（不传 = 当前论文，行为一字不变）。
+               页码按那一篇算，回的 ref 也属于那一篇；id 不存在就直接报错，
+               不会退回去读当前论文。
 
     **分页**：`total` 是未分页前的条目总数，`offset` / `limit` 是这次的口径，
     `next_offset` 是下一页的起点（没有下一页就是 None），`has_more` 说还有没有。
@@ -2057,8 +2121,12 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
     （阅读器里这个位置本来也有公式裁图）——**不要照着半条 LaTeX 讲整条公式**。
     """
     async def _impl() -> dict:
+        pid, _total, bad = await _read_target(ctx, paper_id)
+        if bad is not None:
+            return bad
         items, meta = await _formula_listing(ctx, page=page, query=query,
-                                             include_inline=include_inline)
+                                             include_inline=include_inline,
+                                             paper_id=pid)
         # 默认只给块级（完整、可引用）；行内那批按需取
         listed = [one for one in items if one.get("display") or include_inline]
         # 参数校验：offset < 0 当 0；limit 夹到 [1, 200]（`limit=0` 也夹成 1，不是"回默认"）
@@ -2075,8 +2143,9 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
             latex = str(raw.get("latex") or "")
             page_no = int(raw.get("page") or 0) or None
             cit = ctx.deps.registry.assign(
-                key=f"formula:{page_no}:{raw.get('row_id')}:{_latex_key(latex)}", kind="formula",
-                page=page_no, row_id=raw.get("row_id"), snippet=_clip(latex, 160),
+                key=f"formula:{pid}:{page_no}:{raw.get('row_id')}:{_latex_key(latex)}",
+                kind="formula", page=page_no, row_id=raw.get("row_id"),
+                paper_id=pid, snippet=_clip(latex, 160),
                 # snippet 是截到 160 字的残片，认不出长公式；LaTeX 原样登进去，前端才能
                 # 精确到那一枚 KaTeX（与解读面板 / 笔记卡片同一精度）
                 latex=latex,
@@ -2157,10 +2226,11 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                 out["hint"] = " ".join(hints)
         return out
 
-    return await _guarded(ctx, "formula_get",
-                          {"page": page, "query": _clip(query or "", 40),
-                           "include_inline": include_inline,
-                           "offset": offset, "limit": limit}, _impl())
+    digest = {"page": page, "query": _clip(query or "", 40),
+              "include_inline": include_inline, "offset": offset, "limit": limit}
+    if str(paper_id or "").strip():
+        digest["paper_id"] = _clip(paper_id, 40)
+    return await _guarded(ctx, "formula_get", digest, _impl())
 
 
 async def translate_get(ctx: RunContext[Deps], pages: str,

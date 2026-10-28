@@ -17,7 +17,8 @@ description: 调用 formula_get 提取指定公式的 LaTeX 表达式及上下�
 
 1. **先定位**：不知道公式在哪一页就先 `paper_search`（公式旁边的正文句子通常搜得到，
    比如 "scaled dot-product attention"）。**公式本身很难被检索命中**（LaTeX 与自然语言不同空间）。
-2. `formula_get(page=…)` 拿公式。**默认给的是页级 Markdown 里的块级公式（`display=true`）**
+2. `formula_get(page=…)` 拿公式（要取**别的论文**的公式就传 `paper_id`，页码按那一篇算）。
+   **默认给的是页级 Markdown 里的块级公式（`display=true`）**
    —— 就是阅读器「公式」栏里看到的、可以整条复制的那批完整公式，按文档顺序排好。
    - **默认只给块级那批（实测 24 条）；正文里另有 300 多条行内公式**（`d_k`、`b-1`、
      `_{\text{mse}}` 这类）。回执的 `display_total` / `inline_total` 就是这两个数；

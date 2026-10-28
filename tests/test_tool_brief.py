@@ -142,6 +142,20 @@ def test_page_markdown_edit_spells_out_every_op(args, wants) -> None:
         assert want in brief, brief
 
 
+def test_library_list_shows_paging_and_filters() -> None:
+    """翻到第几页 / 每页几条 / 按哪个分类 / 只看已入库与否：这一行都要看得出来。
+
+    以前只剩一个 query，用户从过程行看不出"这次翻页了没有、筛的是哪一档"。
+    """
+    brief = _checked("library_list", {"query": "量化", "page": 2, "page_size": 20,
+                                      "folder": "none", "in_kb": True})
+    assert brief == "「量化」 · 第 2 页 · 每页 20 · 分类 未分类 · 仅已入库"
+    assert _checked("library_list", {"page": 3, "folder": "f-7",
+                                     "in_kb": False}) == "第 3 页 · 分类 f-7 · 仅未入库"
+    # 没传的键一个字都不占：第 1 页是噪音，不传 in_kb 就是默认口径
+    assert _checked("library_list", {"query": "量化", "page": 1}) == "「量化」"
+
+
 def test_list_tools_show_scope_and_limit() -> None:
     """只写 query 看不出「翻了多大范围」：条数与库范围要跟着。"""
     assert "50 条" in _checked("library_list", {"query": "量化", "limit": 50})

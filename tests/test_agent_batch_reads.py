@@ -26,7 +26,6 @@ from backend.agent.tools import (
     BATCH_QUERY_MAX,
     BATCH_REF_MAX,
     BATCH_URL_MAX,
-    LIBRARY_LIST_DEFAULT,
     block_get,
     figure_image_get,
     figure_list,
@@ -375,10 +374,12 @@ def test_figure_image_get_caps_regions() -> None:
 
 
 def test_library_list_reports_what_it_could_not_list() -> None:
+    """桩只喂 30 篇、total 说 120：「还有 N 篇没列」必须按**真列出来的条数**算。"""
     out = asyncio.run(library_list(_ctx(_deps(FakeHost()))))
-    assert out["returned"] == LIBRARY_LIST_DEFAULT and out["total"] == 120
-    assert out["unprocessed"] == 120 - LIBRARY_LIST_DEFAULT
-    assert f"还有 {120 - LIBRARY_LIST_DEFAULT} 篇没列" in out["note"]
+    listed = len(out["items"])
+    assert listed and out["returned"] == listed and out["total"] == 120
+    assert out["unprocessed"] == 120 - listed
+    assert f"还有 {120 - listed} 篇没列" in out["note"]
 
 
 def test_library_list_limit_narrows_the_list() -> None:

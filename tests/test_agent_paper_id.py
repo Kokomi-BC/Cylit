@@ -18,8 +18,9 @@ from types import SimpleNamespace
 from backend.agent.citations import RefRegistry
 from backend.agent.deps import Deps
 from backend.agent.host import HostError
-from backend.agent.tools import (TEXT_PAGES_MAX, block_get, page_markdown_get,
-                                 paper_search, translate_get)
+from backend.agent.tools import (TEXT_PAGES_MAX, block_get, figure_image_get,
+                                 figure_list, formula_get, page_image_get,
+                                 page_markdown_get, paper_search, translate_get)
 
 #: 当前论文（会话打开的那一篇）
 CURRENT = "pA"
@@ -50,6 +51,10 @@ class FakeHost:
         self.search_calls: list[tuple[str, str]] = []
         self.block_calls: list[tuple[str, str]] = []
         self.row_calls: list[tuple[str, int, str]] = []
+        self.page_image_calls: list[tuple[str, int, int]] = []
+        self.figure_calls: list[tuple[str, int]] = []
+        self.figure_image_calls: list[tuple[str, int, int]] = []
+        self.formula_calls: list[tuple[str, int | None]] = []
 
     async def archive(self, paper_id: str) -> dict:
         self.archive_calls.append(paper_id)
@@ -92,6 +97,40 @@ class FakeHost:
         if text is None:
             raise HostError("主后端 HTTP 404", status=404, code="NOT_FOUND")
         return {"page": int(block_id[1:4]), "type": "text", "text": text}
+
+    async def page_image(self, paper_id: str, page_no: int, dpi: int = 150):
+        """页面图：按论文造字节（回执里那张图就是它，串篇一眼看得出来）。"""
+        self.page_image_calls.append((paper_id, int(page_no), int(dpi)))
+        if int(page_no) > self.papers[paper_id]["page_total"]:
+            return None, None
+        return f"{paper_id}:p{page_no}@{dpi}".encode(), "image/png"
+
+    async def figures(self, paper_id: str, page: int | None = None) -> dict:
+        self.figure_calls.append((paper_id, page))
+        if not page or int(page) > self.papers[paper_id]["page_total"]:
+            return {"items": []}
+        return {"items": [{"index": 0, "kind": "figure", "number": "1",
+                           "caption": f"{paper_id} 第 {page} 页的图注",
+                           "url": f"https://img/{paper_id}/{page}.png"}]}
+
+    async def figure_image(self, paper_id: str, page_no: int, index: int, **kw):
+        self.figure_image_calls.append((paper_id, int(page_no), int(index)))
+        return f"{paper_id}:fig{index}".encode(), "image/png"
+
+    async def formulas(self, paper_id: str, *, page: int | None = None,
+                       query: str | None = None, include_inline: bool = False,
+                       offset: int = 0, limit: int = 40) -> dict:
+        self.formula_calls.append((paper_id, page))
+        items = []
+        for n in range(1, self.papers[paper_id]["page_total"] + 1):
+            if page is not None and int(page) != n:
+                continue
+            items.append({"page": n, "row_id": f"p{n:03d}-00", "display": True,
+                          "latex": f"{paper_id} 第 {n} 页的公式", "grade": None,
+                          "partial": False, "source": "markdown",
+                          "context": f"{paper_id} 第 {n} 页的上下文"})
+        return {"items": items, "display_total": len(items), "inline_total": 0,
+                "source": "markdown"}
 
     async def row(self, paper_id: str, page: int, row_id: str) -> dict:
         self.row_calls.append((paper_id, page, row_id))
@@ -339,3 +378,121 @@ def test_page_total_comes_from_the_target_paper() -> None:
     assert mine["page_total"] == CURRENT_TOTAL
     assert len(mine["pages"]) == TEXT_PAGES_MAX and mine["truncated"] is True
     assert deps.page_total == CURRENT_TOTAL
+
+
+# --------------------------------------------------------------------------
+# 8. 页图 / 图形区域 / 公式：同一套 paper_id 语义（本轮补齐的四个读工具）
+# --------------------------------------------------------------------------
+
+
+def test_page_image_get_default_and_own_id_are_identical() -> None:
+    """不传 与 显式传本论文 id：过程行、附上的图、编号全一样，且不多打一次档案。"""
+    host = FakeHost({CURRENT: _paper(CURRENT, CURRENT_TOTAL)})
+    plain, explicit = _deps(host), _deps(host)
+    one = asyncio.run(page_image_get(_ctx(plain), "4", dpi=300))
+    two = asyncio.run(page_image_get(_ctx(explicit), "4", dpi=300, paper_id=CURRENT))
+    assert one.return_value == two.return_value
+    assert [getattr(c, "data", c) for c in one.content] == [getattr(c, "data", c) for c in two.content]
+    assert host.page_image_calls == [(CURRENT, 4, 300), (CURRENT, 4, 300)]
+    assert host.archive_calls == [], "不传 paper_id 不该多一次档案请求"
+    assert "paper_id" not in plain.trace[-1]["args"], "轨迹摘要里也不多这个键"
+
+
+def test_page_image_get_reads_the_named_paper() -> None:
+    host = _two_papers()
+    deps = _deps(host)
+    out = asyncio.run(page_image_get(_ctx(deps), "2", paper_id=OTHER))
+    assert host.page_image_calls == [(OTHER, 2, 200)]
+    assert out.content[1].data.startswith(b"pB"), "附上的必须是那一篇的那一页"
+    assert {c.paper_id for c in deps.registry.all()} == {OTHER}
+    assert deps.pages_read == [], "读了别篇的第 2 页不算读过这篇的"
+
+
+def test_page_image_get_parses_pages_by_the_target_paper() -> None:
+    """B 只有 4 页：第 9 页按**它**的页数报错，不按当前论文的 22 页去读。"""
+    host = _two_papers()
+    deps = _deps(host)
+    out = asyncio.run(page_image_get(_ctx(deps), "9", paper_id=OTHER))
+    assert out["ok"] is False and "共 4 页" in out["error"]
+    assert host.page_image_calls == []
+
+
+def test_figure_list_default_and_own_id_are_identical() -> None:
+    host = FakeHost({CURRENT: _paper(CURRENT, CURRENT_TOTAL)})
+    plain, explicit = _deps(host), _deps(host)
+    one = asyncio.run(figure_list(_ctx(plain), page=4))
+    two = asyncio.run(figure_list(_ctx(explicit), page=4, paper_id=CURRENT))
+    assert one == two
+    assert set(one) == {"page", "returned", "items", "hint"}, "老用法回执结构一个字不变"
+    assert one["items"][0]["ref"] == 1
+    assert host.archive_calls == []
+
+
+def test_figure_list_reads_the_named_paper() -> None:
+    host = _two_papers()
+    deps = _deps(host)
+    out = asyncio.run(figure_list(_ctx(deps), pages=[1, 2], paper_id=OTHER))
+    assert host.figure_calls == [(OTHER, 1), (OTHER, 2)]
+    captions = [g["items"][0]["caption"] for g in out["pages"]]
+    assert captions == [f"{OTHER} 第 1 页的图注", f"{OTHER} 第 2 页的图注"]
+    assert {c.paper_id for c in deps.registry.all()} == {OTHER}
+
+
+def test_figure_image_get_default_and_own_id_are_identical() -> None:
+    host = FakeHost({CURRENT: _paper(CURRENT, CURRENT_TOTAL)})
+    plain, explicit = _deps(host), _deps(host)
+    one = asyncio.run(figure_image_get(_ctx(plain), page=4, index=0))
+    two = asyncio.run(figure_image_get(_ctx(explicit), page=4, index=0, paper_id=CURRENT))
+    assert one.return_value == two.return_value
+    assert [getattr(c, "data", c) for c in one.content] == [getattr(c, "data", c) for c in two.content]
+    assert host.archive_calls == []
+
+
+def test_figure_image_get_reads_the_named_paper() -> None:
+    host = _two_papers()
+    deps = _deps(host)
+    out = asyncio.run(figure_image_get(_ctx(deps), items=[{"page": 3, "index": 0}],
+                                       paper_id=OTHER))
+    assert host.figure_image_calls == [(OTHER, 3, 0)]
+    assert out.content[1].data.startswith(b"pB")
+    cite, = deps.registry.all()
+    assert cite.paper_id == OTHER and cite.label == "第 3 页 · 图 1"
+
+
+def test_formula_get_default_and_own_id_are_identical() -> None:
+    host = FakeHost({CURRENT: _paper(CURRENT, CURRENT_TOTAL)})
+    plain, explicit = _deps(host), _deps(host)
+    one = asyncio.run(formula_get(_ctx(plain), page=3))
+    two = asyncio.run(formula_get(_ctx(explicit), page=3, paper_id=CURRENT))
+    assert one == two
+    assert one["items"][0]["ref"] == 1 and one["returned"] == 1
+    assert host.formula_calls == [(CURRENT, 3), (CURRENT, 3)]
+    assert host.archive_calls == []
+
+
+def test_formula_get_reads_the_named_paper() -> None:
+    host = _two_papers()
+    deps = _deps(host)
+    out = asyncio.run(formula_get(_ctx(deps), paper_id=OTHER))
+    assert host.formula_calls == [(OTHER, None)], "整篇那份列表只取那篇的一次"
+    assert [one["page"] for one in out["items"]] == [1, 2, 3, 4]
+    assert out["items"][0]["latex"] == f"{OTHER} 第 1 页的公式"
+    assert {c.paper_id for c in deps.registry.all()} == {OTHER}
+
+
+def test_unknown_paper_id_errors_for_the_four_new_tools() -> None:
+    """指名一篇不存在的论文：四个工具都明确报错，一次数都不去打那篇的内容。"""
+    host = _two_papers()
+    deps = _deps(host)
+    ctx = _ctx(deps)
+    for call in (lambda: page_image_get(ctx, "1", paper_id="ghost"),
+                 lambda: figure_list(ctx, page=1, paper_id="ghost"),
+                 lambda: figure_image_get(ctx, page=1, index=0, paper_id="ghost"),
+                 lambda: formula_get(ctx, page=1, paper_id="ghost")):
+        out = asyncio.run(call())
+        assert out["ok"] is False, out
+        assert "ghost" in out["error"] and "不存在" in out["error"]
+    assert host.page_image_calls == [] and host.figure_calls == []
+    assert host.figure_image_calls == [] and host.formula_calls == []
+    assert len(deps.registry) == 0, "错误回执不许留下引用"
+    assert host.archive_calls == ["ghost"] * 4

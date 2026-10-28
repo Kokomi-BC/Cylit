@@ -13,7 +13,8 @@ description: 根据图号、表号和图注定位论文中的目标图表，提�
    "Figure 3:" / "Table 1:" 后面的描述）。图注是**最可靠的定位线索**。
 2. `figure_list(page)` 看这一页有哪些**图形区域**（插图与表格都在这里，看 `kind`），
    拿到 `index`。不确定图在哪几页就**一次给几页**：`figure_list(pages=[4, 7, 9])`
-   —— 回执按页分组（`pages`），别一页一次试。
+   —— 回执按页分组（`pages`），别一页一次试。看**别的论文**的图表时，`figure_list`
+   与 `figure_image_get` 都传 `paper_id`，页码与 `index` 都按那一篇算。
 3. `figure_image_get(page, index)` 把这一区域交给视觉模型看 —— 曲线趋势、标注、图例
    这些**只能看图**，正文里往往没写。要看的区域不止一个就**一次给一批**：
    `figure_image_get(items=[{"page": 4, "index": 1}, {"page": 7, "index": 2}])`

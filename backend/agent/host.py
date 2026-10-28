@@ -170,8 +170,9 @@ class HostClient:
         """书架检索（library_list 的后端）：**数据层分页** + 分类计数。
 
         走 GET /papers（它本来就按页切、folder=none 表示未分类）与 GET /folders
-        （分类 + 每类论文数，计数的唯一实现在 folder_service）；旧的那条
-        /agent/library 只收 q/status，拿不到页码与分类。
+        （分类 + 每类论文数，计数的唯一实现在 folder_service）：两条都早已是公开
+        接口，agent 侧不再有自己的书架路由（旧的 /agent/library 只收 q/status，
+        拿不到页码与分类，已随这次清理删掉）。
 
         page / page_size 的默认值归这里：工具只在模型显式改过时才传，两处都填一个
         就变成"第二处默认值"了（与 tools.LIBRARY_PAGE_DEFAULT 同口径，有测试钉住）。

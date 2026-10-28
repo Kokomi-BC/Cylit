@@ -928,15 +928,6 @@ async def agent_kb_search(request: Request, payload: dict = Body(default={}),
                     request=request)
 
 
-@router.get("/agent/library")
-async def agent_library(request: Request, q: str | None = Query(None),
-                        status: str | None = Query(None),
-                        x_internal_token: str | None = Header(None)):
-    """书架检索（工具 `library_list` 的后端）。"""
-    _require_internal(x_internal_token)
-    return envelope(project.library(q=q, status=status), request=request)
-
-
 @router.get("/agent/notes")
 async def agent_notes(request: Request, query: str | None = Query(None),
                       paper_id: str | None = Query(None),
