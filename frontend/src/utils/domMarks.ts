@@ -545,20 +545,27 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
  */
 function levelRunBand(root: HTMLElement): void {
   const marks = [...root.querySelectorAll<HTMLElement>('mark.hl[data-hl]')];
-  if (marks.length < 2) return;
-  const want = new Map<string, { top: number; bottom: number }>();
+  if (!marks.length) return;
+  const groups = new Map<string, HTMLElement[]>();
   for (const m of marks) {
     const id = m.getAttribute('data-hl') ?? '';
-    const top = parseFloat(m.style.paddingTop || '0') || 0;
-    const bottom = parseFloat(m.style.paddingBottom || '0') || 0;
-    const cur = want.get(id) ?? { top: 0, bottom: 0 };
-    want.set(id, { top: Math.max(cur.top, top), bottom: Math.max(cur.bottom, bottom) });
+    const list = groups.get(id) ?? [];
+    list.push(m);
+    groups.set(id, list);
   }
-  for (const m of marks) {
-    const pad = want.get(m.getAttribute('data-hl') ?? '');
-    if (!pad) continue;
-    if (pad.top > 0) m.style.paddingTop = `${pad.top}px`;
-    if (pad.bottom > 0) m.style.paddingBottom = `${pad.bottom}px`;
+  for (const list of groups.values()) {
+    const top = Math.max(...list.map((m) => parseFloat(m.style.paddingTop || '0') || 0));
+    const bottom = Math.max(...list.map((m) => parseFloat(m.style.paddingBottom || '0') || 0));
+    list.forEach((m, i) => {
+      if (top > 0) m.style.paddingTop = `${top}px`;
+      if (bottom > 0) m.style.paddingBottom = `${bottom}px`;
+      /* 圆角**只留整条带子的首尾两片**。为什么：`mark.hl` 是 8px 圆角，而一条高亮在 DOM 里
+         是**一片片**的（被加粗 / 公式 / 链接切断），一片行内公式只有 14~20px 宽 —— 8px 圆角
+         把左右两端各咬掉 8px，那一小片就成了一个圆点，两边露出白口袋（用户口径 2026-12-28：
+         每个行内公式四周一圈白、整条看着是断的）。中间的片一律方角，相邻两片靠 1px 内边距
+         叠在一起，接缝就没了。 */
+      m.classList.toggle('hl-mid', i > 0 && i < list.length - 1);
+    });
   }
 }
 
