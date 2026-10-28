@@ -60,7 +60,7 @@ EDIT_BATCH_MAX = 60
 ANNOTATE_BATCH_MAX = 24
 
 #: 一次 `block_get` 最多展开几个块（`refs=[…]`）
-BATCH_REF_MAX = 12
+BATCH_REF_MAX = 20
 #: 一次批量检索（paper_search / kb_search / notes_search / web_search）最多几个词（`queries=[…]`）
 BATCH_QUERY_MAX = 8
 #: 一次 `web_fetch` 最多抓几个网址（`urls=[…]`）
@@ -69,9 +69,9 @@ BATCH_URL_MAX = 6
 BATCH_URL_CONCURRENCY = 3
 WEB_FETCH_TIMEOUT = 25.0
 #: 一次 `figure_list` 最多看几页（`pages=[…]`）
-BATCH_PAGE_MAX = 6
+BATCH_PAGE_MAX = 10
 #: 一次 `figure_image_get` 最多取几个区域（`items=[{page, index}, …]`）
-BATCH_FIGURE_MAX = 6
+BATCH_FIGURE_MAX = 10
 #: `notes_search` 的两个**闭集**参数。以前拼错会**静默降级**（scope 不认就当 paper、
 #: kind 不认就当 all）：模型以为查了全库、其实只有本篇，然后自信地说"你库里没有别的论文讲过"。
 NOTES_SCOPES = ("paper", "all")
@@ -1132,6 +1132,54 @@ async def _read_target(ctx: RunContext[Deps], paper_id: str | None
     return want, total, None
 
 
+#: `scope="foreign"` 时补的那一句（只在 foreign 出现：current 加它纯属烧 token）
+_SCOPE_NOTE = "这篇不是当前打开的论文（当前是 {mine}）；引用时必须写明是哪一篇。"
+
+
+def _scope_of(ctx: RunContext[Deps], pid: str) -> dict:
+    """这份回执读的是**哪一篇**，以及它与当前打开的那篇是什么关系。
+
+    为什么每份读回执都要回显这个：同一会话里先后读两篇论文时，两次回执原先唯一能区分
+    来源的线索可能只是 `page_total`（22 vs 15）—— 那是间接信号；两篇同领域时连它都
+    失效，模型就会把另一篇的块当成"这篇"的证据（静默拿错证据）。
+
+    判据只能是「**目标** vs 当前」，**不能**是「调用方传没传 paper_id」：不传与显式传
+    当前论文 id 必须逐字段相同（tests/test_agent_paper_id.py 钉着这条）。
+    """
+    mine = str(ctx.deps.paper_id or "")
+    target = str(pid or mine)
+    if target == mine:
+        return {"paper_id": target, "scope": "current"}
+    return {"paper_id": target, "scope": "foreign",
+            "scope_note": _SCOPE_NOTE.format(mine=mine)}
+
+
+def _scope_text(ctx: RunContext[Deps], pid: str) -> str:
+    """同一件事，但给**图片工具**用：它们回给模型的是说明文字（ToolReturn），没有键可加。"""
+    one = _scope_of(ctx, pid)
+    head = "paper_id=" + one["paper_id"] + "；scope=" + one["scope"]
+    return head + "；" + one["scope_note"] if one.get("scope_note") else head
+
+
+def _refs_target(ctx: RunContext[Deps], refs: list[int]) -> str:
+    """一批 ref 指的是**哪一篇**论文：ref 自己带着论文身份（`Citation.paper_id`）。
+
+    绝不拿 `ctx.deps.paper_id` 硬填：跨篇展开时那不是读的那一篇，回执就会把来源说反。
+    一批里混了两篇（少见）时报第一处 foreign 的那篇 —— 这时要提醒的正是"别把它当这篇"。
+    """
+    mine = str(ctx.deps.paper_id or "")
+    seen: list[str] = []
+    for one in refs:
+        cit = ctx.deps.registry.by_ref(one)
+        pid = str((cit.paper_id if cit is not None else "") or mine)
+        if pid not in seen:
+            seen.append(pid)
+    for pid in seen:
+        if pid != mine:
+            return pid
+    return seen[0] if seen else mine
+
+
 # --------------------------------------------------------------------------
 # ① 检索：找位置，不读内容
 # --------------------------------------------------------------------------
@@ -1171,6 +1219,8 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
     `returned` 同值，名字不带歧义）；要总数就读顶层的 `returned`。
     某一条查失败只在那一条上给 `ok=false` + 原因，别的照常返回。
     一次最多 8 个词；超了会截断，回执里写明「还有 N 条没处理」。
+
+    回执带 `paper_id` 与 `scope`；`scope="foreign"` 表示这一份来自另一篇论文，引用时必须写明是哪篇。
 
     参数：
       query   —— 单个检索词。用**论文里的说法**（术语、方法名）比用口语描述召回好。
@@ -1324,8 +1374,11 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
         if bad is not None:
             return bad
         kept, left = _cap_batch(wanted, BATCH_QUERY_MAX)
+        # 这一趟读的是**哪一篇**：贴在回执末尾（见 `_scope_of`），不进 `_one` 的缓存
+        scope = _scope_of(ctx, pid)
         if queries is None and len(wanted) == 1:
-            return await _one(kept[0], want, pid)   # 老用法：单个词的回执结构一个字都不变
+            # 老用法：`_one` 的回执一个字都不动，末尾只多两个来源键
+            return {**await _one(kept[0], want, pid), **scope}
         groups: list[dict] = []
         for q in kept:
             try:
@@ -1333,11 +1386,13 @@ async def paper_search(ctx: RunContext[Deps], query: str = "", top_k: int = 8,
             except HostError as exc:
                 groups.append({"query": q, "ok": False, "returned": 0, "items": [],
                                "error": f"取数失败：{exc.message}"})
-        return _grouped_receipt(
+        out = _grouped_receipt(
             groups, wanted=len(wanted), left=left, repeats=repeats,
             cap=BATCH_QUERY_MAX,
             hint=("每组各查自己的词：引用时按分组说清是哪个词的命中。展开片段仍用 "
                   "block_get(refs=[…])，一次给一批。"))
+        out.update(scope)   # 来源放顶层一次就够，组内不重复
+        return out
 
     digest = {"query": _clip(query, 60), "queries": list(queries or []),
               "top_k": top_k, "mode": mode or "auto",
@@ -1362,6 +1417,8 @@ async def page_markdown_get(ctx: RunContext[Deps], pages: str,
     **内容优先来自页级产物（英文转录 / 中文翻译）**：那是阅读器与索引共用的同一份读模型，
     表格在转录里是规规矩矩的 Markdown 表格；只有**没转录过**的页才退回解析产物
     （那里表格的单元格可能是粘连的）。
+
+    回执带 `paper_id` 与 `scope`；`scope="foreign"` 表示这一份来自另一篇论文，引用时必须写明是哪篇。
 
     参数：
       pages —— 单页 ``"5"``、区间 ``"3-8"``、多页 ``"4,7"``、整篇 ``"all"``。
@@ -1425,7 +1482,8 @@ async def page_markdown_get(ctx: RunContext[Deps], pages: str,
         if not out_pages:
             return {"ok": False,
                     "error": f"第 {pages} 页没有可读正文（可能还没解析，或页码超出范围）。"}
-        return {"page_total": total or None, "truncated": truncated, "pages": out_pages}
+        return {"page_total": total or None, "truncated": truncated, "pages": out_pages,
+                **_scope_of(ctx, pid)}
 
     return await _guarded(ctx, "page_markdown_get", {"pages": _clip(pages, 40)}, _impl())
 
@@ -1464,7 +1522,9 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
 
     回执按**你给的顺序逐条对应**（每条带自己的 `ref`）；某一条读不到只在那一条上给
     `ok=false` + 原因，别的照常返回 —— 照着失败的那几条补读，**不要整批重来**。
-    一次最多 12 个；超了会截断，回执里写明「还有 N 条没处理」。
+    一次最多 20 个；超了会截断，回执里写明「还有 N 条没处理」。
+
+    回执带 `paper_id` 与 `scope`；`scope="foreign"` 表示这一份来自另一篇论文，引用时必须写明是哪篇。
 
     参数：
       ref  —— 单个引用编号（老用法，照旧）。
@@ -1564,10 +1624,12 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
             return {"ok": False,
                     "error": "要给 ref 或 refs：refs=[3, 5, 9] 一次展开多个块。"}
         kept, left = _cap_batch(wanted, BATCH_REF_MAX)
+        # ref 自己带着论文身份：来源从引用表来，绝不拿当前论文硬填（见 `_refs_target`）
+        scope = _scope_of(ctx, _refs_target(ctx, kept))
         if refs is None and len(wanted) == 1:
-            # 老用法（只给 ref）的回执结构一个字都不变；给了 refs 就一律走批量形态，
-            # 免得模型按 `refs` 下注、拿到的却是另一种结构。
-            return await _one(kept[0])
+            # 老用法（只给 ref）的回执结构一个字都不变（末尾只多两个来源键）；
+            # 给了 refs 就一律走批量形态，免得模型按 `refs` 下注、拿到的却是另一种结构。
+            return {**await _one(kept[0]), **scope}
         rows: list[dict] = []
         for one in kept:
             try:
@@ -1594,6 +1656,7 @@ async def block_get(ctx: RunContext[Deps], ref: int | None = None,
         if out["returned"]:
             out["hint"] = ("这些是逐条的完整原文；某条上下文还不够时，再用 "
                            "page_markdown_get 读它所在的页。")
+        out.update(scope)
         return out
 
     return await _guarded(ctx, "block_get", {"ref": ref, "refs": list(refs or [])}, _impl())
@@ -1610,6 +1673,8 @@ async def page_image_get(ctx: RunContext[Deps], pages: str, dpi: int = 200,
 
     什么时候用：公式的上下标/希腊字母认不准、表格结构看不懂、怀疑解析漏了内容、
     图文混排的版面说不清时。**不要**用它代替读正文 —— 正文用 page_markdown_get。
+
+    回执带 `paper_id` 与 `scope`；`scope="foreign"` 表示这一份来自另一篇论文，引用时必须写明是哪篇。
 
     参数：
       pages —— ``"5"`` / ``"3-4"`` / ``"4,7"``。一次最多 3 页。
@@ -1647,6 +1712,8 @@ async def page_image_get(ctx: RunContext[Deps], pages: str, dpi: int = 200,
             return {"ok": False, "error": f"取不到第 {pages} 页的页面图。"}
         note = (f"已附上第 {'、'.join(map(str, got))} 页的页面图（{use_dpi}dpi）。"
                 + ("页码超出范围，已截断。" if clipped else ""))
+        # 这一份来自哪一篇：图片工具回的是说明文字，所以写在说明里（见 `_scope_text`）
+        note = note + "\n" + _scope_text(ctx, pid)
         return ToolReturn(return_value=note, content=[note, *content])
 
     digest = {"pages": _clip(pages, 40), "dpi": dpi}
@@ -1667,7 +1734,9 @@ async def figure_list(ctx: RunContext[Deps], page: int | None = None,
 
     **批量**：不确定图在哪一页时别一页一次试 —— 一次给几页：`figure_list(pages=[4, 7, 9])`。
     回执按页分组（`pages: [{page, returned, items}]`），顺序与你给的页码一致；
-    这一页没有图形区域是正常情况（`returned=0`），不报错、不影响别的页。一次最多 6 页。
+    这一页没有图形区域是正常情况（`returned=0`），不报错、不影响别的页。一次最多 10 页。
+
+    回执带 `paper_id` 与 `scope`；`scope="foreign"` 表示这一份来自另一篇论文，引用时必须写明是哪篇。
 
     参数：
       page  —— 单页页码（老用法，照旧）。
@@ -1721,8 +1790,10 @@ async def figure_list(ctx: RunContext[Deps], page: int | None = None,
             return {"ok": False,
                     "error": "要给 page 或 pages：pages=[4, 7, 9] 一次看几页的图形区域。"}
         kept, left = _cap_batch(wanted, BATCH_PAGE_MAX)
+        scope = _scope_of(ctx, pid)   # 这一趟列的是**哪一篇**的图形区域
         if pages is None and len(wanted) == 1:
-            return await _one(pid, kept[0])      # 老用法：单页回执结构一个字都不变
+            # 老用法：单页回执结构一个字都不变（末尾只多两个来源键）
+            return {**await _one(pid, kept[0]), **scope}
         groups: list[dict] = []
         for one in kept:
             try:
@@ -1741,6 +1812,7 @@ async def figure_list(ctx: RunContext[Deps], page: int | None = None,
                "failed": len(failed), "unprocessed": left}
         if tips:
             out["note"] = " ".join(tips)
+        out.update(scope)   # 来源放顶层一次就够，每页不重复
         return out
 
     digest = {"page": page, "pages": list(pages or [])}
@@ -1766,7 +1838,9 @@ async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
     平行数组一旦长度不等就没有确定语义（3 页配 2 个序号，谁对谁？），而且每条的失败/成功
     没法单独挂。成对写进去，每一条自带 page + index，回执也能**按条对应**给结论。
     回执里逐条列出「第 N 页 · 图 3（ref=…）」，取不到的那条单独给原因，别的照常附图。
-    一次最多 6 个区域；超了会截断，并在回执里写明「还有 N 条没处理」。
+    一次最多 10 个区域；超了会截断，并在回执里写明「还有 N 条没处理」。
+
+    回执带 `paper_id` 与 `scope`；`scope="foreign"` 表示这一份来自另一篇论文，引用时必须写明是哪篇。
 
     参数：
       page  —— 页码（单条老用法）。
@@ -1835,6 +1909,7 @@ async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
             if got.get("ok") is not True:
                 return {"ok": False, "error": got.get("error") or "取不到这个区域的裁图。"}
             note = f"已附上第 {one_page} 页的{got['what']}（ref={got['ref']}）。"
+            note = note + "\n" + _scope_text(ctx, pid)   # 这一份来自哪一篇
             return ToolReturn(return_value=note,
                               content=[note,
                                        BinaryContent(data=got["raw"],
@@ -1862,7 +1937,7 @@ async def figure_image_get(ctx: RunContext[Deps], page: int | None = None,
         if failed:
             head = (f"{head} 有 {failed} 条没取到（原因见那一条），别的照常附上 —— "
                     f"只补失败的那几条。")
-        note = "\n".join([head, *lines])
+        note = "\n".join([head, *lines, _scope_text(ctx, pid)])   # 末尾一行说来自哪一篇
         return ToolReturn(return_value=note, content=[note, *content])
 
     digest = {"page": page, "index": index, "items": list(items or [])}
@@ -2093,6 +2168,8 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
     `grade`（A/B/C）是**解析卡的字段**：转录层来的条目 `grade=None` 是正常的，
     不代表数据缺失，也不影响这条公式可用。
 
+    回执带 `paper_id` 与 `scope`；`scope="foreign"` 表示这一份来自另一篇论文，引用时必须写明是哪篇。
+
     参数：
       page  —— 只看某一页（不确定页码就先 paper_search）。
       query —— 关键词过滤。**公式没有可用的编号字段**：论文自己的 `(3)` 编号只出现在
@@ -2233,6 +2310,7 @@ async def formula_get(ctx: RunContext[Deps], page: int | None = None,
                              f"（按文档顺序）。{tail}")
             if hints:
                 out["hint"] = " ".join(hints)
+        out.update(_scope_of(ctx, pid))   # 这份列表来自哪一篇（见 `_scope_of`）
         return out
 
     digest = {"page": page, "query": _clip(query or "", 40),
@@ -2248,6 +2326,8 @@ async def translate_get(ctx: RunContext[Deps], pages: str,
 
     什么时候用：用户问"这段中文怎么说的 / 译文对不对"，或者你要用中文复述原文、
     想确认某个术语在译文里的统一译法时。判断"译文是否忠实"时也要看它。
+
+    回执带 `paper_id` 与 `scope`；`scope="foreign"` 表示这一份来自另一篇论文，引用时必须写明是哪篇。
 
     参数：
       pages —— ``"5"`` / ``"3-8"`` / ``"4,7"`` / ``"all"``，一次最多 20 页。
@@ -2296,7 +2376,8 @@ async def translate_get(ctx: RunContext[Deps], pages: str,
                     "error": f"第 {pages} 页还没有译文（这篇论文可能没翻译，或该页未翻译）。"}
         return {"page_total": total or None, "truncated": clipped,
                 "pages": out_pages,
-                "note": f"另有 {missing} 个块没有译文（未翻译），已跳过。" if missing else ""}
+                "note": f"另有 {missing} 个块没有译文（未翻译），已跳过。" if missing else "",
+                **_scope_of(ctx, pid)}
 
     return await _guarded(ctx, "translate_get", {"pages": _clip(pages, 40)}, _impl())
 

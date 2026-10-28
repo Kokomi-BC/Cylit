@@ -13,6 +13,7 @@ r"""读**别的论文**（可选 `paper_id`）的三条读通路：检索 / 正�
 from __future__ import annotations
 
 import asyncio
+import re
 from types import SimpleNamespace
 
 from backend.agent.citations import RefRegistry
@@ -184,8 +185,8 @@ def test_default_call_is_identical_and_asks_for_no_archive() -> None:
     one = asyncio.run(page_markdown_get(_ctx(plain), "1"))
     two = asyncio.run(page_markdown_get(_ctx(explicit), "1", paper_id=CURRENT))
     assert one == two
-    # 回执形状不变（没有新增字段）
-    assert set(one) == {"page_total", "truncated", "pages"}
+    # 回执形状不变：只在末尾多出"这一份来自哪一篇"的两个键（见第 9 节）
+    assert set(one) == {"page_total", "truncated", "pages", "paper_id", "scope"}
     assert set(one["pages"][0]) == {"page", "blocks"}
     assert set(one["pages"][0]["blocks"][0]) == {"ref", "type", "text", "translation"}
     # ref 仍是 1、2（分配顺序不变）
@@ -199,7 +200,8 @@ def test_paper_search_default_receipt_is_unchanged() -> None:
     host = _two_papers()
     deps = _deps(host)
     out = asyncio.run(paper_search(_ctx(deps), query="检索"))
-    assert set(out) == {"query", "page_total", "returned", "items", "hint"}
+    assert set(out) == {"query", "page_total", "returned", "items", "hint",
+                        "paper_id", "scope"}
     assert out["query"] == "检索" and out["returned"] == 1
     item = out["items"][0]
     assert set(item) == {"ref", "page", "section", "type", "side", "snippet"}
@@ -423,7 +425,8 @@ def test_figure_list_default_and_own_id_are_identical() -> None:
     one = asyncio.run(figure_list(_ctx(plain), page=4))
     two = asyncio.run(figure_list(_ctx(explicit), page=4, paper_id=CURRENT))
     assert one == two
-    assert set(one) == {"page", "returned", "items", "hint"}, "老用法回执结构一个字不变"
+    assert set(one) == {"page", "returned", "items", "hint",
+                        "paper_id", "scope"}, "老用法回执结构一个字不变"
     assert one["items"][0]["ref"] == 1
     assert host.archive_calls == []
 
@@ -496,3 +499,117 @@ def test_unknown_paper_id_errors_for_the_four_new_tools() -> None:
     assert host.figure_image_calls == [] and host.formula_calls == []
     assert len(deps.registry) == 0, "错误回执不许留下引用"
     assert host.archive_calls == ["ghost"] * 4
+
+
+# --------------------------------------------------------------------------
+# 9. 每份读回执都回显**这一趟实际读的是哪一篇**：`paper_id` + `scope`
+#
+# 为什么：同一会话里先后读两篇论文时，两次回执原先唯一能区分来源的线索可能只是
+# `page_total`（22 vs 15）—— 那是间接信号；两篇同领域时连它都失效，模型会把另一篇
+# 的块当成"这篇"的证据（静默拿错证据）。所以每个读工具都把目标论文写在回执里。
+# --------------------------------------------------------------------------
+
+#: 本轮被改的八个读工具（`kb_search` 每条命中本来就带 paper_id；`notes_search` 不是正文）
+SCOPED_TOOLS = ("paper_search", "page_markdown_get", "translate_get", "block_get",
+                "page_image_get", "figure_list", "figure_image_get", "formula_get")
+
+#: 图片工具回给模型的是**说明文字**（ToolReturn）：来源写在那一行里，不在 dict 键上
+#: 论文 id 里不会有 `；`，所以按它切开就够
+_NOTE_SCOPE_RE = re.compile(r"paper_id=([^；\s]+)；scope=(current|foreign)")
+
+#: 老口径的键集：新键只能追加在末尾，一个都不许删、不许改名
+OLD_KEYS = {
+    "paper_search": {"query", "page_total", "returned", "items", "hint"},
+    "page_markdown_get": {"page_total", "truncated", "pages"},
+    "translate_get": {"page_total", "truncated", "pages", "note"},
+    "block_get": {"ref", "page", "type", "text", "translation"},
+    "figure_list": {"page", "returned", "items", "hint"},
+    "formula_get": {"total", "returned", "offset", "limit", "next_offset",
+                    "has_more", "source", "truncated", "display_total",
+                    "inline_total", "omitted_inline", "missing_pages", "items",
+                    "hint"},
+}
+
+
+def _one_call(name: str, ctx, paper_id: str | None = None):
+    """按名字调一次那个工具，拿回它的回执。
+
+    `block_get` 没有 `paper_id` 参数：它的目标由 **ref 自己的论文身份**决定 —— 所以先在
+    那一篇里检索一次，再按回来的 ref 展开（这正是"拿到谁的 ref 就展开谁"的真实姿势）。
+    """
+    kw = {} if paper_id is None else {"paper_id": paper_id}
+    if name == "block_get":
+        found = asyncio.run(paper_search(ctx, query="检索", paper_id=paper_id))
+        return asyncio.run(block_get(ctx, ref=found["items"][0]["ref"]))
+    calls = {
+        "paper_search": lambda: paper_search(ctx, query="检索", **kw),
+        "page_markdown_get": lambda: page_markdown_get(ctx, "1", **kw),
+        "translate_get": lambda: translate_get(ctx, "1", **kw),
+        "page_image_get": lambda: page_image_get(ctx, "1", **kw),
+        "figure_list": lambda: figure_list(ctx, page=1, **kw),
+        "figure_image_get": lambda: figure_image_get(ctx, page=1, index=0, **kw),
+        "formula_get": lambda: formula_get(ctx, page=1, **kw),
+    }
+    return asyncio.run(calls[name]())
+
+
+def _scope_in(out) -> tuple[str | None, str | None, str]:
+    """取（paper_id, scope, scope_note）：dict 读键，图片工具读说明文字那一行。"""
+    if isinstance(out, dict):
+        return out.get("paper_id"), out.get("scope"), str(out.get("scope_note") or "")
+    note = str(out.return_value)
+    hit = _NOTE_SCOPE_RE.search(note)
+    assert hit, f"说明文字里没写出来源：{note!r}"
+    pid, scope = hit.group(1), hit.group(2)
+    return pid, scope, note if scope == "foreign" else ""
+
+
+def test_a_default_call_says_current_and_carries_no_scope_note() -> None:
+    """a) 不传 paper_id：`paper_id` == 当前论文、`scope` == "current"、**没有** scope_note。"""
+    assert len(SCOPED_TOOLS) == 8, "八个读工具一个都不能漏"
+    for name in SCOPED_TOOLS:
+        deps = _deps(_two_papers())
+        out = _one_call(name, _ctx(deps))
+        pid, scope, note = _scope_in(out)
+        assert pid == CURRENT, f"{name}：回执没回显当前论文（拿到 {pid}）"
+        assert scope == "current", f"{name}：不传就是当前论文"
+        assert note == "", f"{name}：current 时不许带 scope_note（省 token）"
+        if isinstance(out, dict):
+            assert "scope_note" not in out, f"{name}：current 的回执里不许有这个键"
+
+
+def test_b_explicit_own_id_is_field_for_field_identical() -> None:
+    """b) 显式传当前论文 id：与 a) **逐字段相同**（把老口径钉死）。"""
+    for name in SCOPED_TOOLS:
+        one = _one_call(name, _ctx(_deps(_two_papers())))
+        two = _one_call(name, _ctx(_deps(_two_papers())), CURRENT)
+        assert _scope_in(one) == _scope_in(two), f"{name}：来源字段不一致"
+        if isinstance(one, dict):
+            assert one == two, f"{name}：不传 与 显式传本篇 必须逐字段相同"
+        else:   # 图片工具：说明文字与附图逐项相同
+            assert one.return_value == two.return_value, f"{name}：说明文字不一致"
+            assert [getattr(c, "data", c) for c in one.content] == [
+                getattr(c, "data", c) for c in two.content], f"{name}：附图不一致"
+
+
+def test_c_foreign_call_names_both_papers() -> None:
+    """c) 传别的论文 id：== 那篇、`scope` == "foreign"、scope_note 里有当前论文 id。"""
+    for name in SCOPED_TOOLS:
+        deps = _deps(_two_papers())
+        out = _one_call(name, _ctx(deps), OTHER)
+        pid, scope, note = _scope_in(out)
+        assert pid == OTHER, f"{name}：回显的必须是**目标那篇**，不是当前论文"
+        assert scope == "foreign", f"{name}：读了另一篇就该是 foreign"
+        assert note and CURRENT in note, f"{name}：scope_note 要说清当前是哪一篇"
+
+
+def test_d_scoped_tools_append_the_new_keys_at_the_end() -> None:
+    """d) 原有键一个不少、不改名：新键只追加在末尾。"""
+    for name in SCOPED_TOOLS:
+        out = _one_call(name, _ctx(_deps(_two_papers())))
+        if not isinstance(out, dict):
+            assert _NOTE_SCOPE_RE.search(str(out.return_value)), f"{name}：说明里没有来源"
+            continue
+        assert list(out)[-2:] == ["paper_id", "scope"], f"{name}：新键要追加在末尾"
+        assert set(out) - {"paper_id", "scope"} == OLD_KEYS[name], \
+            f"{name}：原有键被改了（现在是 {sorted(out)}）"
