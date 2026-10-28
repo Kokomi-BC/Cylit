@@ -191,6 +191,9 @@ const SKILL_NAME_ZH: Record<string, string> = {
   'answer-paper': '论文问答',
   'explain-term': '术语与译法',
   'edit-text': '文本修订',
+  // 2026-12 新增（第二阶段改造）：目录浏览。名字只写"它是什么"，
+  // 能力一律来自后端 description（见上面那条警告）。
+  'browse-paper-library': '论文目录',
 };
 
 /** 技能名里的那一个"联网搜索"，齿轮与内嵌设置都挂在它身上。 */
@@ -220,6 +223,9 @@ const fileInput = ref<HTMLInputElement | null>(null);
  * computed（skillGroups）一并删除，列表直接渲染排序后的 filteredSkills。 */
 const SKILL_ORDER: string[] = [
   'web-search', 'web-fetch',
+  // 目录浏览排在"找"这一段的**最前**：先看库里有什么，再决定读哪一篇 / 在哪一篇里搜。
+  // 没收录进这张表的名字会排到最后（skillRank 返回长度），所以新技能必须记得加进来。
+  'browse-paper-library',
   'search-paper', 'reader-state', 'deep-read-paper', 'answer-paper',
   'read-text', 'read-page-image', 'read-figure', 'read-formula',
   'explain-term', 'annotate-text', 'edit-text',
