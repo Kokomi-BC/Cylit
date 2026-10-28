@@ -8,6 +8,7 @@ import { restoreTabs } from '@/stores/tabs';
 import { bootTheme } from '@/theme/theme';
 import { bootDisplayScale } from '@/stores/display';
 import { bootAppearance } from '@/stores/appearance';
+import { bootMathFit } from '@/utils/mathFit';
 import '@/styles/base.css';
 import 'katex/dist/katex.min.css';
 
@@ -29,3 +30,6 @@ const app = createApp(App);
 app.config.errorHandler = (err) => { reportError(err, '界面异常'); };
 app.use(router);
 app.mount('#app');
+/* 行内公式的自适应宽度（放不下就等比缩，再不行独占一行横滑）：
+   必须挂载之后再装 —— 它观察的是 document.body 的插入事件。 */
+bootMathFit();

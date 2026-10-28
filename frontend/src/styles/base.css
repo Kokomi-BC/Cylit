@@ -265,6 +265,32 @@ html[data-hl-style="underline"] mark.hl.block .katex > .katex-html {
 }
 mark.hl.block .katex > .tag { position: absolute; right: 0; }
 mark.hl.block .katex-display.leqno .katex > .tag { left: 0; right: auto; }
+/* **行内公式**上的底色画在**公式本体**上（`mark` 只是外壳，不画）。
+ *
+ * 为什么：`mark` 是行内盒子，底色只有**一个行高**（实测 21px）；而公式的外接框比行高更高 ——
+ * 分式 / 上下标 24~46px，被拆行的那种更是 73px。底色画在 `mark` 上就只盖住最上面那一条，
+ * 看上去就是「高亮没跟着公式换行」（用户口径 2026-12-28，截图里黄色带只压在公式第一行）。
+ * 画在 `.katex` 上则是它自己的 border-box —— 公式多高多宽，色块就多大，与前后文字的色带也接得住
+ * （`padding: 0` 把外壳的 1px 去掉，否则公式两侧各留一条白缝）。
+ * ⚠️ 别把它挪到 `mark` 上：`box-decoration-break: clone` 会按行盒复制底色，公式只有第一个行盒。
+ * 整块公式（`.katex-display`）不走这条 —— 那边的外壳是块级、整行宽，色带画在 `.katex-html` 上
+ * （见上面 `mark.hl.block` 那段），两条是同一个解法在两种盒子上的写法。 */
+mark.hl:has(> .katex:not(.katex-display)) { background: none; padding: 0; }
+mark.hl > .katex:not(.katex-display) { background: var(--hl-bg, transparent); border-radius: var(--r-xs); }
+/* 下划线模式同一条：线压在这枚公式盒子的底边（`text-decoration` 根本画不到公式的排版盒子上） */
+html[data-hl-style="underline"] mark.hl:has(> .katex:not(.katex-display)),
+html [data-hl-force="underline"] mark.hl:has(> .katex:not(.katex-display)) { background-image: none; }
+html[data-hl-style="underline"] mark.hl > .katex:not(.katex-display),
+html [data-hl-force="underline"] mark.hl > .katex:not(.katex-display) {
+  background-color: transparent;
+  background-image: linear-gradient(var(--hl-ink, var(--accent)), var(--hl-ink, var(--accent)));
+  background-repeat: no-repeat; background-size: 100% max(2px, .08em);
+  background-position: 0 100%;
+}
+/* 设置页预览卡里钉死「荧光笔」的那一张，把底色按回来 */
+html [data-hl-force="marker"] mark.hl > .katex:not(.katex-display) {
+  background: var(--hl-bg, transparent); background-image: none;
+}
 
 /* 在左栏 PDF 上拖拽划词时（`PdfPage.vue` 给 `<html>` 加的临时类）：右侧译文、页头这些
  * **非 PDF 内容不参与本次选区** —— Chrome 会把 `user-select:none` 的内容从选区里跳过，
@@ -924,6 +950,36 @@ table.data.fixed { table-layout: fixed; }
 .katex:not(.katex-display) {
   display: inline-block; max-width: 100%;
   overflow-x: auto; overflow-y: hidden; vertical-align: middle;
+  /* **行内公式是一个原子，不许在中间断行**（用户口径 2026-12-28：对照栏里的公式断成两行，
+     分式跑到第二行、末尾的句号又单独占一行）。
+     为什么以前会断：KaTeX 把一张公式拆成多个 `.base`（inline-block 的"不可断行单元"），
+     而这里没写 `white-space`，于是默认的 `normal` 让浏览器**在单元之间断行** ——
+     字号 16px、栏宽 420px 时那张 `D_{\text{prod}}… \le \frac{…}{d}…` 实测被切成 3 个行盒
+     （高 73px，比一个行高 21px 还高），`overflow-x: auto` 一次都没生效（`scrollWidth` == `clientWidth`）。
+     定成 nowrap 之后它就只是一个盒子：放得下就整张留在本行，放不下走下面的「等比缩小 / 独占一行」。
+     `overflow-wrap` 也要按回去：阅读器行上是 `anywhere`（长 URL 得能断），它会漏进公式里。 */
+  white-space: nowrap;
+  overflow-wrap: normal;
+  /* 放不下时按 `--katex-fit` **等比缩小**（1 = 原尺寸，由 `utils/mathFit.ts` 量完写进来）。
+     只改字号就够了：KaTeX 的尺寸全是 em，字号一改整张公式跟着缩、跟着重排。
+     ⚠️ KaTeX 自己的 `.katex` 是 `font: normal 1.21em …`（简写里带了字号），所以这里必须
+     用**更高的选择器权重**把它接过来，否则缩不了。 */
+  font-size: calc(1.21em * var(--katex-fit, 1));
+}
+/* 公式后面**紧跟中文收尾标点**（`。，、；：？！）】」…`）时给它留出标点的位置。
+   不留就会这样：公式盒子正好占满一栏，标点挤不进去 → 下一行只剩一个「。」（用户报的
+   「一个句号也另起一行」）。类由 `utils/mathFit.ts` 打，1.2em 探到的就是标点自身宽度量级
+   （em 相对公式自己的字号，比正文略大一点，宁可多留不要少留）。 */
+.katex:not(.katex-display).katex-tail { max-width: calc(100% - 1.2em); }
+/* 缩到下限（`utils/mathFit.ts` 的 `MIN_FIT` = 0.65）还是放不下：**独占一行、居中、自己横滑** ——
+   与整块公式（`.katex-display`）同一套观感，也与 2026-12-07 那条「修法不应该是支持横向滚动吗」同一口径。
+   做法照抄行间公式：外层块自己滚，`.katex-html` 撑到内容宽并保底 100%（放得下时仍然居中）。 */
+.katex:not(.katex-display).katex-wide {
+  display: block; max-width: 100%; margin: .45em 0;
+  overflow-x: auto; overflow-y: hidden;
+}
+.katex:not(.katex-display).katex-wide > .katex-html {
+  width: max-content; min-width: 100%; margin: 0 auto;
 }
 .katex:not(.katex-display):has(.tag) .katex-html { padding-right: 2.2em; }
 /* 行内公式同样**不画条**：KaTeX 内部有 1~2px 的负间距，几乎每条行内公式都"能滚 2px"，

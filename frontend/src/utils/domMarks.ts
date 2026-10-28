@@ -285,15 +285,11 @@ function wrapRange(segs: Seg[], start: number, end: number, color: string, id: s
       // 但底色**不画在这个块级外壳上**（那是整行宽），而是画在 `bandFormula` 收出来的
       // `.katex-html` 上（它的大小 = 公式外接框）。
       const display = !!el.classList?.contains('katex-display');
-      /* 行内公式：右内边距换成**等宽外边距**（`mark.hl` 的 `padding: 0 1px` 在 base.css，动不得）。
-         为什么：公式后面紧跟右括号/中文标点时，那 1px 内边距是**涂了色**的 —— 色块正好压在
-         括号的盒子上（实测 `mark.right` 与 "）" 的 `left` 完全相等，一点缝都不剩）。
-         换成 margin 之后排版**一个像素都不变**（后面那个字的位置照旧），但色块停在公式边界，
-         括号前面留出 1px 空白。左内边距留着：与前一段文字的高亮接得住。 */
-      if (!display) {
-        mark.style.paddingRight = '0px';
-        mark.style.marginRight = '1px';
-      } else mark.classList.add('block');
+      /* 行内公式**不再动外壳的 padding / margin**（以前把右内边距换成等宽外边距，为的是
+         "外壳自己画底色"时色块别糊到后面那个括号上）。现在底色画在 `.katex` 本体上
+         （`base.css` 的 `mark.hl > .katex:not(.katex-display)`），外壳只是不画底色的容器；
+         再用 margin 让位，就变成公式两侧各一条白缝（用户口径 2026-12-28：高亮"不连续"）。 */
+      if (display) mark.classList.add('block');
       el.parentNode.replaceChild(mark, el);
       mark.appendChild(el);
       /* `bandFormula` 必须在**插进 DOM 之后**跑：`mark.hl.block .katex > .katex-html` 那条

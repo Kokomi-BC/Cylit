@@ -16697,3 +16697,94 @@ anyOffScreen = false（改前有一例 bottom=876 > 820）
 
 停靠态（侧栏）里这块浮层背后就是 `.composer` 那层不透明的底，玻璃感很弱；浮层模式、或菜单高到越过
 输入区时背后才是正文，玻璃才明显。要玻璃明显就得离开按钮，要贴着按钮就接受这一点 —— 用户选后者。
+# 255 · 行内公式不再断行；放不下等比缩小；高亮底色画在公式本体上（2026-12-28）
+
+用户口径（对照栏截图）：**「解决这个布局下公式换行，但是高亮没有连着换行的问题，带 markdown 格式
+不连续的问题，还有一个句号也另起一行的问题」**。
+
+## 根因（量出来的，不是猜的）
+
+拿这一段的真实 Markdown（`p003-13` 的中文译文）过一遍 `mdToHtml`，在 460px 栏里量：
+
+```
+改前  inlineK=13  bigK: display=inline-block h=73 scrollW=420 clientW=420 whiteSpace=normal
+改后  inlineK=13  bigK: display=inline-block h=46 scrollW=530 clientW=420 whiteSpace=nowrap
+```
+
+三件事各自的原因：
+
+1. **公式自己在断行**：`.katex:not(.katex-display)` 是 `inline-block`，但 `white-space` 是默认的
+   `normal` —— KaTeX 把一张公式拆成多个 `.base`（inline-block 的"不可断行单元"），浏览器于是在
+   单元之间**断行**。实测那张 `D_{\\text{prod}}…≤\\frac{…}{d}…` 变成 **3 个行盒（高 73px）**，
+   `overflow-x: auto` 一次都没生效（`scrollWidth == clientWidth`，等于没有可滚的东西）。
+2. **高亮只盖住第一行**：底色画在外壳 `<mark class="hl">` 上，而 `mark` 是**行内盒子**，底色只有一个
+   行高（实测 21px）；公式的外接框 46/73px。`box-decoration-break: clone` 也只是"按行盒复制"，
+   于是只有最上面那一条被涂到 —— 用户看到的「高亮没跟着公式换行」。
+3. **句号单独一行**：公式盒子占满一栏后，紧跟的 `。` 挤不进去 → 下一个行首只剩一个标点。中文的
+   行首禁则本不该允许，但"原子内联元素 + 标点"这个边界浏览器不管。
+
+## 改法
+
+**① 行内公式是原子**（`styles/base.css`）
+
+```css
+.katex:not(.katex-display) {
+  white-space: nowrap;      /* 不许在 .base 之间断行 */
+  overflow-wrap: normal;    /* 阅读器行上的 anywhere 会漏进来 */
+  font-size: calc(1.21em * var(--katex-fit, 1));   /* 放不下时等比缩 */
+}
+```
+
+**② 放不下就缩，缩到 0.65 还放不下才独占一行横滑**（新文件 `utils/mathFit.ts`）
+
+- `--katex-fit`：`clientWidth`（`max-width: 100%` 的百分比就是"这一栏"）与 `scrollWidth`
+  （nowrap 之后才是自然宽）量出比例，缩到放得下为止；下限 0.65（16px 正文里缩到 13.4px，
+  比公式自己的上下标还大）。
+- `katex-tail`：公式后面紧跟中文收尾标点时 `max-width: calc(100% - 1.2em)` —— **给标点让位**，
+  句号就不再另起一行。
+- `katex-wide`：缩到下限仍放不下（栏太窄）→ `display: block`、居中、自己横滑，**原尺寸不缩**，
+  与整块公式同一套观感（2026-12-07 那条「修法不应该是支持横向滚动吗」同一口径）。
+- 挂载点在 `main.ts` 的 `bootMathFit()`：`MutationObserver` 盯 `childList`（**不看 attributes**，
+  自己写 class/style 不会自激），一帧内的插入合成一次；窗口改宽 debounce 160ms 整页重量。
+  不逐个渲染点调 —— `mdToHtml` 的调用点有十几个，漏一个漏一处。
+- **行间公式的内层 `.katex` 必须排掉**（`.katex-display > .katex` 也满足 `:not(.katex-display)`）：
+  那种盒子是整栏宽、超出时本来就该横滑，不能被当成"行内放不下"缩掉。按父节点过滤。
+
+**③ 高亮的底色画在公式本体上**（`styles/base.css` + `utils/domMarks.ts`）
+
+```css
+mark.hl:has(> .katex:not(.katex-display)) { background: none; padding: 0; }
+mark.hl > .katex:not(.katex-display) { background: var(--hl-bg); border-radius: var(--r-xs); }
+```
+
+`.katex` 是自己的 border-box（脚本块多大、色块就多大），前后文字的色带也接得住。下划线模式同一条
+（线压在这枚公式盒子的底边）；设置页 `data-hl-force="marker"` 那张预览卡按回来。
+`domMarks.ts` 里"把右内边距换成等宽外边距"的旧补丁一并删掉 —— 它是给"外壳自己画底色"让位的，
+现在只会让公式两侧各留一条白缝。
+
+## 实测（真浏览器，三个宽度）
+
+```
+430 pre : multiRect=0 clippedHidden=1   bigK fit=1     h=46 scrollW=530 clientW=390
+430 post: multiRect=0 clippedHidden=0   bigK fit=0.689 h=32 scrollW=367 clientW=366 tail=true
+360 post: multiRect=0 clippedHidden=0   bigK wide=1    display=block 原尺寸 + 横滑
+300 post: multiRect=0 clippedHidden=0   bigK wide=1    display=block 原尺寸 + 横滑
+高亮：mark bg=none padding=0px，katex bg=rgba(255,214,64,.45) radius=8px，band h=46 == 公式 h=46
+行间公式（宽过一栏那条）：inner .katex fit=- display=block，外层 .katex-display scrollW 520 > clientW 320（照旧横滑）
+```
+
+真阅读器（`/cylit/reader/turboquant-online-vector-iclr-26`，对照栏）截图复核：那条 `D_{\\text{prod}}` 现在整张
+留在**一行**里、末尾的 `，` 跟着它、`对任意 b ≥ 0。` 折到下一行；`p004-06` 那条绿色高亮跨两枚行内
+公式是**一整条**带子（无白缝）。
+
+## 校验
+
+- `vue-tsc --noEmit` + `npm run build` 绿；
+- `scripts/frontend_check.py` **168 项全过**。
+
+## 已知取舍
+
+- 公式被缩小时，分式的上/下两半也跟着小（13 个像素左右），比原来的全尺寸难认一点 —— 换来的是
+  "不切断、不丢尾巴、标点不落单"。
+- 极端窄栏（< 360px）走"独占一行 + 横滑"，那一行的**下一个行首**可能是一个逗号（块级公式没法把标点
+  拖回上一行）。要"标点在行内"就只能留在行内、接受公式被裁掉半截 —— 选了前者。
