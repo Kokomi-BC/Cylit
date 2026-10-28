@@ -73,6 +73,27 @@ export function citeBlockKey(
   return `${pid}::${bid}`;
 }
 
+/**
+ * **论文级引用**（agent 直接引一篇论文本身：只有 `paper_id`，没有块 / 行 id）→
+ * 取这一篇的档案做预览（后端 `GET /papers/{paper_id}/brief`）。
+ *
+ * 为什么需要它：这类引用在库里是**独立的一类**（实测一条会话里 2 条 `kind=paper`），
+ * 从前它既没有块 id 也没有行 id，速览卡只能落到「这条引用没给可取原文的块 id」那一句上 ——
+ * 用户点开只看到一句论文题名加一条灰字说明，等于没法看（用户口径 2026-12-28）。
+ * 论文级引用**不该**去要块：它引的就是"这篇文章"。
+ */
+export function citeBriefUrl(paperId: string | null | undefined): string {
+  const pid = String(paperId ?? '').trim();
+  if (!pid) return '';
+  return `/papers/${encodeURIComponent(pid)}/brief`;
+}
+
+/** 论文档案的缓存键（键里必须带 paper_id：同一张卡换一篇就是另一份档案）。 */
+export function citeBriefKey(paperId: string | null | undefined): string {
+  const pid = String(paperId ?? '').trim();
+  return pid ? `${pid}::brief` : '';
+}
+
 export interface CiteBlockTarget {
   /** 这条引用属于哪篇（缺 paper_id 时就是当前论文） */
   paperId: string;

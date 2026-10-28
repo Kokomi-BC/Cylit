@@ -37,7 +37,8 @@ import { HL_SWATCHES, highlightCss, paletteNameOf, swatchClassOf, swatchLabel,
   swatchStyleOf } from '@/utils/highlightColors';
 import { noteBodyText, splitNoteRefs, withNoteRefs, type NoteRef } from '@/utils/noteRefs';
 import { pickCiteGroup, sortCiteRows } from '@/utils/citeGroup';
-import { blockPeekFields, citeBlockTarget, type PeekBlockFields } from '@/utils/citePaper';
+import { blockPeekFields, citeBlockTarget, citeBriefKey, citeBriefUrl, citeSegmentId,
+  type PeekBlockFields } from '@/utils/citePaper';
 import { readerTarget } from '@/utils/navigation';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
@@ -329,11 +330,111 @@ function foreignPeekView(ask: CitePeekAsk, target: ReturnType<typeof citeBlockTa
   };
 }
 
+/** 论文级引用（`kind=paper`：只有 paper_id、没有块 / 行 id）的速览卡取自**这一篇的档案**。
+ *
+ *  为什么单独一条路：这类引用在库里是独立的一类，从前它既没有块 id 也没有行 id，
+ *  卡片只能落到「这条引用没给可取原文的块 id」那句灰字上 —— 用户实测点开就是一句题名 + 一句
+ *  说明（2026-12-28）。它引的就是"这篇文章"，所以取 `GET /papers/{id}/brief` 的领域、摘要
+ *  与主要论断，既不空着也不必假装它指向某一段正文。 */
+type BriefPeek = { body: string; title: string } | { error: string };
+const peekBrief = reactive<Record<string, BriefPeek>>({});
+const peekBriefBusy = reactive<Record<string, boolean>>({});
+
+/** brief 的响应 → 卡片正文：摘要（`meta.abstract_zh`）优先，其次领域；末尾挂前三条主要论断。 */
+function briefBodyOf(raw: any): string {
+  const b = raw?.brief ?? raw ?? {};
+  const parts: string[] = [];
+  const abs = String(b?.meta?.abstract_zh ?? '').trim();
+  if (abs) parts.push(abs);
+  const domain = String(b?.domain ?? '').trim();
+  if (domain && !abs.includes(domain)) parts.push('**领域**：' + domain);
+  const claims = (Array.isArray(b?.key_claims) ? b.key_claims : [])
+    .map((c: unknown) => String(c ?? '').trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  if (claims.length) parts.push('**主要论断**\n' + claims.map((c) => '- ' + c).join('\n'));
+  return parts.join('\n\n');
+}
+
+/** 论文档案正文：档案里只写了领域（没摘要 / 没论断）时，再补这一篇的摘要。
+ *
+ *  为什么要有这一步：有的论文只跑过"档案"还没跑解读（实测 TURBOQUANT 的 brief 只有一句
+ *  `domain`，卡片正文 32 个字）—— 一张只剩一句领域的卡，对"这篇讲了什么"没有回答力。
+ *  摘要本来就在 paper 上存着（`abstract_zh`），补它不需要额外解析。 */
+async function briefBodyWithAbstract(pid: string, data: any): Promise<string> {
+  const body = briefBodyOf(data);
+  if (body.length >= 120) return body;
+  try {
+    const paper = await api.get<any>('/papers/' + encodeURIComponent(pid));
+    const p = paper?.paper ?? paper ?? {};
+    const abs = String(p?.abstract_zh ?? '').trim() || String(p?.abstract ?? '').trim();
+    if (abs && !body.includes(abs)) return [body, abs].filter(Boolean).join('\n\n');
+  } catch { /* 摘要取不到就用档案那一句，不把卡片搞成错误态 */ }
+  return body;
+}
+
+async function loadPeekBrief(pid: string, force = false): Promise<void> {
+  const url = citeBriefUrl(pid);
+  const key = citeBriefKey(pid);
+  if (!url || !key) return;
+  if (!force && (peekBrief[key] || peekBriefBusy[key])) return;
+  peekBriefBusy[key] = true;
+  try {
+    const data = await api.get<any>(url);
+    const title = String(data?.brief?.title ?? data?.title ?? '');
+    peekBrief[key] = { body: await briefBodyWithAbstract(pid, data), title };
+  } catch (err: any) {
+    peekBrief[key] = { error: String(err?.message || err || '读取失败') };
+  } finally {
+    delete peekBriefBusy[key];
+  }
+}
+
+function briefPeekView(card: PeekCard) {
+  const ask = card.ask;
+  const pid = String(ask.paperId ?? '').trim() || paperId.value;
+  const key = citeBriefKey(pid);
+  const hit = key ? peekBrief[key] : undefined;
+  const busy = Boolean(key && peekBriefBusy[key]);
+  const fields = hit && 'body' in hit ? hit : null;
+  const failed = hit && 'error' in hit ? hit.error : '';
+  const foreign = pid !== paperId.value;
+  const src = paperTitle(pid) || pid;
+  let note = '';
+  if (!fields && busy) note = '正在读取《' + src + '》的论文档案…';
+  else if (!fields && failed) note = '《' + src + '》的论文档案没读出来：' + failed;
+  else if (!fields) note = '《' + src + '》还没有可显示的论文档案';
+  const body = fields?.body ?? '';
+  return {
+    title: '论文概览',
+    zh: body,
+    en: '',
+    bilingual: false,
+    body,
+    imageUrl: '',
+    caption: '',
+    latex: '',
+    page: 0,
+    rowId: '',
+    anchor: ask.anchor,
+    /** 跳转：论文级引用没有落点，落到那一篇的第 1 页（同篇则回到顶部） */
+    anchorId: '',
+    paperId: pid,
+    foreign,
+    source: foreign ? '来自《' + src + '》' : '',
+    note,
+  };
+}
+
 function onCitePeekAsk(ask: CitePeekAsk): void {
   /* 别篇的引用：**链要跳过**。 `withCiteChain` 是按**本文**的行池算的，拿别篇的编号去算
      只会算出不相干的行；内容由 `foreignPeekView` 按它那篇现取。 */
   const target = peekTargetOf(ask);
-  if (target.foreign) void loadPeekRemote(ask, Boolean(ask.click));
+  /* 论文级引用（没有块 / 行 id）：取**那一篇的档案**，别去要块 —— 它引的是"这篇文章"。
+     点开时强制重取（网络抖一下不该永久空白，与跨篇块内容同一条口径）。 */
+  if (!citeSegmentId({ block_id: ask.blockId, row_id: ask.rowId })) {
+    void loadPeekBrief(target.paperId || String(ask.paperId ?? ''), Boolean(ask.click));
+  } else if (target.foreign) void loadPeekRemote(ask, Boolean(ask.click));
   else ask = withCiteChain(ask);
   clearPeekTimers();
   /* 已经有同一处的卡（钉住的也算）：不再开第二张 —— 否则先钉住一张、再悬浮同一处，
@@ -426,6 +527,8 @@ function peekViewOf(card: PeekCard) {
   const ask = card.ask;
   /* 别篇：本文的行 / 图 / 表里没有它 —— 内容按**那条引用自己的** paper_id 现取（已缓存） */
   const target = peekTargetOf(ask);
+  /* 论文级引用：没有块 / 行 id 就没有"这一段"可画，画那一篇的档案（见 briefPeekView） */
+  if (!citeSegmentId({ block_id: ask.blockId, row_id: ask.rowId })) return briefPeekView(card);
   if (target.foreign) return foreignPeekView(ask, target, card.lang);
   const rowId = rowAnchorId(String(ask.rowId || ''))
     || (ask.blockId ? String(reader.value?.block_rows?.[rowAnchorId(String(ask.blockId))] ?? '') : '');
@@ -599,7 +702,12 @@ function jumpFromPeek(card: PeekCard): void {
      都不行退到那一页。所以这里给的行 / 块 id 是**那篇的**编号，能精确到块就精确，
      认不出也至少落到它那一页。 */
   if (v.foreign) {
+    /* 论文级引用没有落点（anchorId 空）：落到**那一篇的第 1 页**，而不是带着空锚点去解析 */
     void router.push(openTab(readerTarget(v.paperId, v.anchorId, v.page || undefined)) as never);
+    return;
+  }
+  if (!v.rowId) {
+    void focusRow(allRows.value[0]?.id ?? '', { page: 1, flash: true });
     return;
   }
   void focusRow(v.rowId, { page: v.page || undefined, flash: true });

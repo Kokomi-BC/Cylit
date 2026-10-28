@@ -2194,7 +2194,9 @@ def check_explain_shell() -> None:
 def check_pdf_highlight(browser: str, base: str, paper: str, budget_ms: int,
                         model: bool = False) -> None:
     print("\n⑥ PDF 页图高亮 + 笔记浮层（划词 → 存库 → 画在文字层 → 刷新后回到原处 → 自删）")
-    url = f"{base}/cylit/reader/{paper}?left=page&nosse=1"
+    # view 必须钉住：阅读器按论文记住上次的视图，只传 left=page 时若上次停在"译文"，
+    # 原文栏根本不渲染 → 一条 PDF 断言都量不到（2026-12-28 实测：5 条连环红）。
+    url = f"{base}/cylit/reader/{paper}?left=page&view=bilingual&nosse=1"
     html = (PROBE_PDFHL.replace("__URL__", url).replace("__TITLE__", "pdfhl")
             .replace("__PAPER__", paper).replace("__MODEL__", "1" if model else "0"))
     # 这条探针要**真渲染整份 PDF**（pdf.js 下载 + 光栅化 + 文字层）再走一遍高亮/笔记/浮层的全套，
@@ -3595,6 +3597,91 @@ async function run() {
 </script>"""
 
 
+PROBE_PAPERPEEK = PROBE_HEAD + """
+let started = false;
+f.addEventListener('load', run);
+setTimeout(() => { if (!started) run(); }, 3000);
+async function run() {
+  if (started) return;
+  started = true;
+  const w = f.contentWindow, d = f.contentDocument;
+  const res = { stage: 'loaded' };
+  /* 折叠空白**不用正则转义**（Python 会先把 backslash-t / backslash-n 吃成真控制字符，JS 那条正则
+     就成语法错误、整页一个字都不执行 —— 实测探针停在 waiting） */
+  const clean = (s) => {
+    let t = '', sp = false;
+    for (const ch of String(s || '')) {
+      if (ch.charCodeAt(0) <= 32) { if (!sp) { t += ' '; sp = true; } }
+      else { t += ch; sp = false; }
+    }
+    return t.trim();
+  };
+  try {
+    await until(d, (x) => x.querySelector('.chat'), 60);
+    const row = d.querySelector('.chat .row-main');
+    if (row) row.click();
+    await until(d, (x) => x.querySelector('.chat .md p'), 80);
+    const box = d.querySelector('.chat .md') || d.querySelector('.chat');
+    if (!box) { res.error = "对话面板里没有消息容器"; out(res); return; }
+    const btn = d.createElement('button');
+    btn.type = 'button';
+    btn.className = 'cite-inline cite-mark __probe';
+    btn.setAttribute('data-ref', '99');
+    btn.setAttribute('data-paper', '__PAPER__');
+    btn.setAttribute('data-row', '');
+    btn.setAttribute('data-block', '');
+    btn.textContent = '[99]';
+    box.appendChild(btn);
+    await sleep(200);
+    btn.dispatchEvent(new w.PointerEvent('pointerover', { bubbles: true }));
+    await until(d, (x) => x.querySelector('[data-cite-peek]'), 80);
+    await sleep(700);
+    const card = d.querySelector('[data-cite-peek]');
+    if (!card) { res.error = '没弹出速览卡'; out(res); return; }
+    res.text = clean(card.textContent);
+    const noteEl = card.querySelector('.tiny.faint');
+    res.note = noteEl ? clean(noteEl.textContent) : '';
+    const bodyEl = card.querySelector('.cite-peek-md');
+    res.bodyLen = bodyEl ? clean(bodyEl.textContent).length : 0;
+    btn.remove();
+  } catch (e) {
+    res.stage = "error";
+    res.error = String((e && e.message) || e);
+  }
+  out(res);
+}
+</script>"""
+
+def check_paper_peek(browser: str, base: str, paper: str, budget_ms: int) -> None:
+    """论文级引用（只有 paper_id 的引用）的速览卡：该画**那一篇的档案**。
+
+    为什么单列一条：这类引用既没有块 id 也没有行 id，从前卡片只能落到
+    「这条引用没给可取原文的块 id」那句灰字上（用户 2026-12-28 截图）。判定全在一个纯函数里
+    （`citeSegmentId` 为空 → 取 `/papers/{id}/brief`），所以这里只验**卡片里真的出现了档案**。
+    """
+    print("\n⑧ 论文级引用的速览卡（只有 paper_id → 论文档案，而不是「没给块 id」）")
+    url = f"{base}/cylit/reader/{paper}?side=chat&view=bilingual&nosse=1"
+    html = (PROBE_PAPERPEEK.replace("__URL__", url).replace("__TITLE__", "paperpeek")
+            .replace("__PAPER__", paper))
+    res = run_probe(browser, base, "probe_paperpeek", html, max(budget_ms, 60_000))
+    if not res:
+        record("paperpeek", "论文级引用的速览卡能打开（探针拿到结果）", False, "探针没产出结果")
+        return
+    if res.get("stage") == "error" or res.get("error"):
+        record("paperpeek", "论文级引用的速览卡能打开（探针拿到结果）", False,
+               str(res.get("error"))[:90])
+        return
+    (ROOT / "data" / "logs" / "_paperpeek_raw.json").write_text(
+        json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
+    record("paperpeek", "只有 paper_id 的引用画的是**论文概览**",
+           "论文概览" in (res.get("text") or ""),
+           f"卡片首句={str(res.get('text'))[:40]}")
+    record("paperpeek", "档案摘要真的取到了（卡片正文有字数）",
+           (res.get("bodyLen") or 0) >= 80, f"正文 {res.get('bodyLen')} 字")
+    record("paperpeek", "不再落「这条引用没给可取原文的块 id」",
+           "没给可取原文的块 id" not in ((res.get("note") or "") + (res.get("text") or "")),
+           f"说明={res.get('note') or '（无）'}")
+
 def check_notes_page(browser: str, base: str, paper: str, budget_ms: int) -> None:
     """笔记整页：三类记录归并成一个列表 + 缩略显示 + 编辑入口（造的数据验完自删）。"""
     print("\n⑦ 笔记整页（批注 / 高亮 / 笔记合并成一个列表；造的数据验完自删）")
@@ -4285,6 +4372,7 @@ def main() -> int:
 
     # ---- ⑥ PDF 页图高亮：划词 → 存库 → 画在文字层 → 刷新后仍在 → 自删 ----
     check_pdf_highlight(browser, base, args.paper, args.budget, model=args.model)
+    check_paper_peek(browser, base, args.paper, args.budget)
     check_notes_page(browser, base, args.paper, args.budget)
     check_references_pane(browser, base, args.paper, args.budget)
     check_highlight_update_api(base, args.paper)   # 纯 HTTP：浮层色块要用的改色接口
