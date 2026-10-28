@@ -7139,7 +7139,9 @@ async function addHighlight(color: string): Promise<Highlight[]> {
  * 后端会把同一分组（跨行高亮）的记录一起删掉，并回传所有被删的 id，这里同步本地列表。
  * 挂在被删高亮上的笔记由后端级联删掉（`Highlight └── Note`）。
  */
-async function deleteHighlightIds(ids: string[]) {
+/** 删整组高亮。`quiet` = 别自己弹提示 —— 调用方要把这次动作**合成一条**通知时用
+ *  （删笔记连带删高亮、批量删笔记都是这种情况：一次动作两条 toast 会叠着闪两下）。 */
+async function deleteHighlightIds(ids: string[], opts: { quiet?: boolean } = {}) {
   if (!ids.length) return;
   const gone = new Set<string>(ids);
   // 逐条删。**单条失败不能中断**：跨行高亮是"同组多条"，删第一条时后端已经把整组删掉并
@@ -7168,7 +7170,7 @@ async function deleteHighlightIds(ids: string[]) {
   }));
   highlights.value = highlights.value.filter((h) => !gone.has(h.id));
   notes.value = notes.value.filter((n) => !n.highlight_id || !gone.has(n.highlight_id));
-  toast(`已删除 ${gone.size} 处高亮`, 'ok', 1800);
+  if (!opts.quiet) toast(`已删除 ${gone.size} 处高亮`, 'ok', 1800);
 }
 
 async function deleteSelectionHighlights() {
@@ -7831,8 +7833,10 @@ async function deleteNotePopover(card: NoteCard) {
   try {
     await api.del(`/notes/${card.noteId}`);
     /* 高亮用整组删（跨行高亮是"同组多条"，`deleteHighlightIds` 按 group_id 去重、只发一次） */
-    if (card.highlightId) await deleteHighlightIds([card.highlightId]);
-    toast('笔记已删除', 'ok', 1600);
+    if (card.highlightId) await deleteHighlightIds([card.highlightId], { quiet: true });
+    /* 一次动作**只弹一条**通知（用户口径 2026-12）：以前这里会先弹「已删除 1 处高亮」再弹
+       「笔记已删除」，两秒内叠着闪两下，看着像删了两样东西。 */
+    toast(card.highlightId ? '笔记与对应高亮已删除' : '笔记已删除', 'ok', 1600);
     closeNoteCard(card.key);
     await refreshAnnotations();
   } catch (err) { reportError(err, '删除笔记失败'); } finally { card.busy = false; }
@@ -8598,10 +8602,13 @@ async function deleteNoteRows(rows: Array<{
     ...annIds.map((id) => api.del(`/annotations/${id}`).then(() => true, () => false)),
     ...noteIds.map((id) => api.del(`/notes/${id}`).then(() => true, () => false)),
   ]);
-  if (hlIds.length) await deleteHighlightIds(hlIds);
+  // 高亮那一段也静音：整批只弹**一条**通知（条数按"这次点了多少条"算，用户看得懂）
+  if (hlIds.length) await deleteHighlightIds(hlIds, { quiet: true });
   const failed = results.filter((ok) => !ok).length;
+  const okCount = rows.length - failed;
   await refreshAnnotations();
-  toast(failed ? `已删除，${failed} 条失败` : '已删除', failed ? 'warn' : 'ok', 1800);
+  toast(failed ? `已删除 ${okCount} 条，${failed} 条失败` : `已删除 ${okCount} 条笔记`,
+        failed ? 'warn' : 'ok', 1800);
 }
 
 async function copySelection() {

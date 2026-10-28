@@ -46,12 +46,20 @@ export const state = reactive<AppState>({
 
 let toastSeq = 0;
 
-/** 默认停留 4.6s（用户口径 2026-12-02：原来 3.6s "一眼就没了"，尤其带正文的通知读完要时间）。
- *  ⚠️ 退场还有 260ms 的滑出淡出动画，所以肉眼看到的总时长比这个数再长一点。 */
-export function toast(message: string, kind: Toast['kind'] = 'info', ttl = 4600): number {
+/** 提示停留时长（用户口径 2026-12）：**正常提示 2 秒**，只有 `error` / `danger` 留 4.6 秒
+ *  —— 出错那句往往最长（几行解释 + 怎么办），2 秒读不完；其余一律 2 秒。
+ *
+ *  ⚠️ 调用点里那 73 处显式 `ttl` **不再生效**（形参改名 _ttl 保留，只为不动那些调用点）：
+ *  停留时间现在只由级别决定，没有常驻提示这种用法（要常驻就用别的东西）。
+ *  ⚠️ 退场还有 260ms 的滑出淡出动画（`.toast-leave-active`），肉眼看到的总时长比这个数再长一点。 */
+export const TOAST_TTL = 2000;
+export const TOAST_TTL_ERROR = 4600;
+
+export function toast(message: string, kind: Toast['kind'] = 'info', _ttl = 0): number {
   const id = ++toastSeq;
   state.toasts.push({ id, message: String(message ?? ''), kind });
-  if (ttl > 0) setTimeout(() => dismissToast(id), ttl);
+  const ms = kind === 'error' ? TOAST_TTL_ERROR : TOAST_TTL;
+  setTimeout(() => dismissToast(id), ms);
   return id;
 }
 

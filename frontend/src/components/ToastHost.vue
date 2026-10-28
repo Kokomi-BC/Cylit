@@ -69,16 +69,25 @@ function titleOf(kind?: string | null): string {
   width: min(420px, calc(100vw - 36px));
   pointer-events: none;
 }
-/* 卡片本体：**主题色**的浅底 + 同色系描边 + 浮层投影（用户口径 2026-12-02）。
+/* 卡片本体：**毛玻璃**（用户口径 2026-12）—— 材质与右键菜单（ContextMenu 的 .ctx-panel）
+   完全一致：同一组 `--glass-bar-top/bottom` 令牌 + 同一套 `backdrop-filter: blur(48px) saturate(2.6)`，
+   并且**去掉描边**（玻璃靠投影与模糊分界，不靠一条线）。
    底子仍是 `--bg-elev`（深浅两档都能读），只掺 7% 主色 —— 换肤时整张卡跟着换色调，
-   而不是一张与主题无关的白纸。 ⚠️ 别直接把底色写成主色：那条绿/橙上的正文会糊成一片。 */
+   而不是一张与主题无关的白纸。 ⚠️ 别直接把底色写成主色：那条绿/橙上的正文会糊成一片。
+   ⚠️ 别把 `backdrop-filter` 配不透明底：玻璃只在半透明时才透出后面的内容，写死就白做。 */
 .toast {
   pointer-events: auto;
   display: flex; align-items: flex-start; gap: 10px;
   width: 100%; padding: 13px 13px 14px 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border));
+  /* 半透明的两端都从「主色 7% + 背景高亮层」混出来，再按玻璃令牌压成半透明 */
+  --toast-fill: color-mix(in srgb, var(--accent) 7%, var(--bg-elev));
+  border: 0;
   border-radius: calc(var(--radius-lg) + 2px);
-  background: color-mix(in srgb, var(--accent) 7%, var(--bg-elev));
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--toast-fill) var(--glass-bar-top, 80%), transparent),
+    color-mix(in srgb, var(--toast-fill) var(--glass-bar-bottom, 68%), transparent));
+  backdrop-filter: blur(48px) saturate(2.6);
+  -webkit-backdrop-filter: blur(48px) saturate(2.6);
   box-shadow: var(--shadow-flyout);
   font-size: calc(13px * var(--ts, 1)); line-height: 1.55;
 }
