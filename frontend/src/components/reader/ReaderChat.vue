@@ -20,6 +20,7 @@ import { flyMessage } from '@/composables/useComposerFlight';
 import { api, assetUrl } from '@/api/client';
 import { postSse } from '@/api/stream';
 import { withNoteRefs } from '@/utils/noteRefs';
+import { citePaperId } from '@/utils/citePaper';
 import { renderedLength } from '@/utils/latexText';
 import { mdToHtml, inlineHtml } from '@/composables/useMarkdown';
 import { watchAnswerImages } from '@/utils/mdImages';
@@ -98,6 +99,11 @@ const emit = defineEmits<{
     refs?: number[] | null;
     /** 整条消息的引用池：阅读器据此按「同页 + 行号差 1」扩成链 */
     pool?: CitePoolItem[] | null;
+    /** 这条引用**自己的**论文（缺字段的老按钮由阅读器退回当前论文）：
+     *  与当前论文不同时，速览卡要按它去那篇现取内容 */
+    paperId?: string | null;
+    /** true = 点出来的（不是悬浮）：卡片立刻开、并钉住，等着用户决定要不要跳过去 */
+    click?: boolean;
   }): void;
   (e: 'peek-hide'): void;
   (e: 'clear-selection'): void;
@@ -1013,10 +1019,12 @@ function onCitationClick(ev: MouseEvent) {
      只有阅读器那边有（`ReaderView.focusMany` / `buildCiteChain`）。 */
   const refs = parseRefNums(btn.dataset.refs);
   const pool = parseCitePool(btn.dataset.pool);
-  const paper = btn.dataset.paper || '';
-  if (paper && paper !== props.paperId) {
-    // 与 gotoCitation 同一条口径：别的论文的块在这里没有落点，只提示、不乱跳
-    toast(`这条引用来自《${btn.getAttribute('aria-label') || paper}》，不在当前论文里`, 'warn');
+  /* 别篇的引用：**照旧开速览卡**（内容按它自己那篇现取，见 `ReaderView.peekViewOf`），
+     不再像以前那样一句 toast 就 return —— 那等于"这段看得见、点不开"。
+     卡头那枚「来自《…》」已经把"这不是本文"说清楚了，不必再打扰一次。
+     `click` 让阅读器立刻开卡并钉住：这是用户主动点的，没道理再等它自己收走。 */
+  if (citePaperId({ paper_id: btn.dataset.paper }, props.paperId) !== props.paperId) {
+    emit('peek', peekAskOf(btn, true));
     return;
   }
   if (pool.length) {
@@ -1058,19 +1066,14 @@ function onCitationClick(ev: MouseEvent) {
  * 只上报位置与锚点，**不碰点击**：点标号仍然走 onCitationClick（跳原文）；
  * 悬浮只是先看一眼。真正的浮层在 ReaderView —— 那里才有整篇的行 / 图 / 表。
  */
-function onCitePeek(ev: PointerEvent) {
-  const btn = (ev.target as HTMLElement | null)?.closest?.('.cite-inline') as HTMLElement | null;
-  if (!btn) return;
+/** 一枚引用按钮 → 速览卡要的那份请求。**悬浮与点击共用**（点击只是多带一个 `click`），
+ *  两处一旦各拼一份，同一枚标号悬浮与点出来的卡片就会不是同一处引用。 */
+function peekAskOf(btn: HTMLElement, click = false) {
   const r = btn.getBoundingClientRect();
   const page = Number(btn.dataset.page || 0);
   const refs = parseRefNums(btn.dataset.refs);
   const pool = parseCitePool(btn.dataset.pool);
-  /* 速览卡要和点击**同一套口径**（用户口径 2026-12-11：「鼠标悬浮的浮窗也要改」）：
-     点一枚 → 它那条链一起闪；那悬浮它时卡片就得画**整条链**，否则出现
-     「正文闪了三行、卡片只给一行」。所以这里也**不算链**，只把编号与引用池交上去 ——
-     算链是阅读器那一枚纯函数（`buildCiteChain`）的事，两边各算一遍迟早算出两个答案
-     （而且公式行那条规则只有那边认得）。 */
-  emit('peek', {
+  return {
     anchor: { x: r.left, y: r.top, w: r.width, h: r.height },
     /* 卡片头（标题 / 锚点 / 定位）由阅读器按链头改写：相邻两枚按钮共用一条链时，
        卡片内容不该随鼠标落在链的哪一枚上而变来变去。这里给的是"这一枚自己"的兜底值。 */
@@ -1078,14 +1081,29 @@ function onCitePeek(ev: PointerEvent) {
     rowId: btn.dataset.row || null,
     blockId: btn.dataset.block || null,
     label: btn.dataset.label || btn.getAttribute('aria-label') || '',
-    /* rows 一律 null：带 pool 时由阅读器算（见上面），没 pool 时退回"这一行" */
+    /* rows 一律 null：带 pool 时由阅读器算（见下面 onCitePeek），没 pool 时退回"这一行" */
     rows: null,
     /* 引用自带的片段：老引用可能既没有行 id 也没有可映射的块 id，
        这时卡片至少能显示这一两句话，而不是一句「没有可显示的内容」 */
     snippet: btn.dataset.snippet || '',
     refs: refs.length ? refs : parseRefNums(btn.dataset.ref),
     pool: pool.length ? pool : null,
-  });
+    /* 这条引用**自己的**论文（`data-paper`）：别篇的卡片要按它去那篇取内容；
+       缺字段的老会话由 `citePaperId` 退回当前论文 —— 什么都没显示是最糟的退路。 */
+    paperId: citePaperId({ paper_id: btn.dataset.paper, block_id: btn.dataset.block }, props.paperId),
+    click,
+  };
+}
+
+function onCitePeek(ev: PointerEvent) {
+  const btn = (ev.target as HTMLElement | null)?.closest?.('.cite-inline') as HTMLElement | null;
+  if (!btn) return;
+  /* 速览卡要和点击**同一套口径**（用户口径 2026-12-11：「鼠标悬浮的浮窗也要改」）：
+     点一枚 → 它那条链一起闪；那悬浮它时卡片就得画**整条链**，否则出现
+     「正文闪了三行、卡片只给一行」。所以这里也**不算链**，只把编号与引用池交上去 ——
+     算链是阅读器那一枚纯函数（`buildCiteChain`）的事，两边各算一遍迟早算出两个答案
+     （而且公式行那条规则只有那边认得）。 */
+  emit('peek', peekAskOf(btn));
 }
 
 function onCitePeekOut() { emit('peek-hide'); }
@@ -3358,10 +3376,9 @@ function citationAnchor(citation: AgentCitation): string {
 }
 
 function gotoCitation(citation: AgentCitation) {
-  if (citation.paper_id && citation.paper_id !== props.paperId) {
-    toast(`这条引用来自《${citation.label || citation.paper_id}》，不在当前论文里`, 'warn');
-    return;
-  }
+  /* 跨篇的引用在这里**不再拦**（以前是一条 toast + return）：onCitationClick 已经把别篇
+     送去速览卡了（内容按它自己那篇现取），走到这儿的一定是同篇 —— 判定只留在调用方一处，
+     免得出现「只有老路径点得动、新路径点不动」这种分叉。 */
   const anchor = citationAnchor(citation);
   /* 公式引用要精确到那一枚 KaTeX：新消息直接用 `latex`；**存量消息**只有 snippet，
      而公式引用的 snippet 本来就是被截到 160 字的 LaTeX —— 拿它顶（findFormula 比签名，

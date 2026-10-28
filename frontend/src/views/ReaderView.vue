@@ -37,12 +37,14 @@ import { HL_SWATCHES, highlightCss, paletteNameOf, swatchClassOf, swatchLabel,
   swatchStyleOf } from '@/utils/highlightColors';
 import { noteBodyText, splitNoteRefs, withNoteRefs, type NoteRef } from '@/utils/noteRefs';
 import { pickCiteGroup, sortCiteRows } from '@/utils/citeGroup';
+import { blockPeekFields, citeBlockTarget, type PeekBlockFields } from '@/utils/citePaper';
+import { readerTarget } from '@/utils/navigation';
 import { buildPageGroups, flattenRows } from '@/composables/usePageRows';
 import { taskTypeLabel } from '@/utils/tasks';
 import { confirmRegenerateInsight } from '@/utils/understanding';
 import { READER_TEXT_SIZES, type ReaderTextSize } from '@/utils/readerFont';
 import { addReaderSeconds, noteReaderOpen } from '@/utils/readerStats';
-import { reportError, toast, withLoading } from '@/stores/app';
+import { paperTitle, reportError, toast, withLoading } from '@/stores/app';
 import { openTab, routeKey, setTabTitle } from '@/stores/tabs';
 import {
   INK_COLORS, MARKER_COLORS, activeInkColor, canRedo, canUndo, clearPageInk, colorFor, customColors,
@@ -156,6 +158,11 @@ type CitePeekAsk = {
   refs?: number[] | null;
   /** 整条消息的引用池：**有它就说明 rows 要在这里现算**（见 `withCiteChain`） */
   pool?: CitePoolItem[] | null;
+  /** 这条引用**自己的**论文：与当前论文不同时，内容按它去那篇现取（见 `peekViewOf`）。
+   *  缺字段（跨库检索之前的存量消息 / 解读页的标号）由 `citeBlockTarget` 退回当前论文。 */
+  paperId?: string | null;
+  /** true = 点出来的（不是悬浮）：立刻开卡并钉住 —— 用户主动点的，不该等 320ms 或自己收走 */
+  click?: boolean;
 };
 
 /** 一张速览卡。可以同时存在多张 —— 拖动过 / 点过锚定的那张会**钉住**（移开不自动关），
@@ -195,8 +202,11 @@ function clearPeekTimers(): void {
 function peekSig(ask: CitePeekAsk): string {
   /* 为什么把 rows 也算进来（合并标号 `[1,4]` 会画那两处）：两种写法的卡片头可能是同一行
      （都取这一组里最上面那行），但覆盖范围不同 —— 只比行的话，后者会命中前者那张卡，
-     看到的是上一次（少一处）的内容。 */
-  return [String(ask.rowId || ''), String(ask.blockId || ''), ask.page ?? '', String(ask.rows || '')].join('|');
+     看到的是上一次（少一处）的内容。
+     **paper_id 也要算**：`p003-00` 这种行 / 块 id 每篇论文都长得一样，只比 id 的话
+     别篇那张卡会被当成"同一处"，悬浮过去看到的是本文的内容（跨篇速览卡的经典坑）。 */
+  return [String(ask.paperId || ''), String(ask.rowId || ''), String(ask.blockId || ''),
+          ask.page ?? '', String(ask.rows || '')].join('|');
 }
 
 /**
@@ -237,16 +247,110 @@ function withCiteChain(ask: CitePeekAsk): CitePeekAsk {
   };
 }
 
+/** 这张卡的引用属于哪一篇、要不要请求（判定全在 `utils/citePaper` 里，这里只把
+ *  卡片那套 camelCase 字段喂给它，免得同一件事在视图里再判一遍）。 */
+function peekTargetOf(ask: CitePeekAsk) {
+  /* row_id 也必须喂进去：页级转录行的引用是「block_id 空 + row_id=p002-00」，
+     漏了它 target.url 就是空串 —— 卡片只剩引用自带的 snippet，还误报「没有可取原文的块 id」。 */
+  return citeBlockTarget({ paper_id: ask.paperId, block_id: ask.blockId, row_id: ask.rowId },
+                         paperId.value);
+}
+
+type RemotePeek = { fields: PeekBlockFields } | { error: string };
+/** 跨篇速览卡的块内容：按 `paper_id::block_id`（`citeBlockKey`）缓存 —— 同一处悬浮
+ *  多次只打一次后端。成功与失败都记下来（失败记的是「这一处读不出来」），但**点开**会强制
+ *  重取一次：网络抖一下就永久空白是不可接受的。 */
+const peekRemote = reactive<Record<string, RemotePeek>>({});
+/** 正在取的键：模板据此显示「读取中」，而不是先闪一句「没有内容」 */
+const peekRemoteBusy = reactive<Record<string, boolean>>({});
+
+/** 别篇的一条引用 → 现取它那篇的块内容。**同篇一律直接返回、不发请求**（内容本来就在
+ *  reader 数据里，见 `peekViewOf` 前半段）。
+ *  URL / 缓存键都由 `citeBlockTarget` 给定，判定只此一处。 */
+async function loadPeekRemote(ask: CitePeekAsk, force = false): Promise<void> {
+  const target = peekTargetOf(ask);
+  if (!target.foreign || !target.url || !target.key) return;
+  if (!force && (peekRemote[target.key] || peekRemoteBusy[target.key])) return;
+  peekRemoteBusy[target.key] = true;
+  try {
+    const data = await api.get<any>(target.url);
+    peekRemote[target.key] = { fields: blockPeekFields(data) };
+  } catch (err: any) {
+    peekRemote[target.key] = { error: String(err?.message || err || '读取失败') };
+  } finally {
+    delete peekRemoteBusy[target.key];
+  }
+}
+
+/** 别篇的一张卡：内容全部来自 `GET /papers/{paper_id}/blocks/{block_id}`（已按
+ *  paper_id + block_id 缓存）。**本文的行 / 图 / 表一概不参与** —— 它们属于另一篇论文，
+ *  拿本文的数据去兜底只会画出不相干的段落。 */
+function foreignPeekView(ask: CitePeekAsk, target: ReturnType<typeof citeBlockTarget>, lang: 'zh' | 'en') {
+  const hit = target.key ? peekRemote[target.key] : undefined;
+  const busy = Boolean(target.key && peekRemoteBusy[target.key]);
+  const fields = hit && 'fields' in hit ? hit.fields : null;
+  const failed = hit && 'error' in hit ? hit.error : '';
+  const page = fields?.page || ask.page || 0;
+  /* 取不到正文时用引用自带的一两句兜底（与同篇同一条口径：先去掉没闭合的数学定界符） */
+  const snippetRaw = trimUnclosedMath(String(ask.snippet || '').trim()
+    .replace(/^公式\s*\S*?\s*[:：]\s*/, ''));
+  const zh = String(fields?.zh || snippetRaw).trim();
+  const en = String(fields?.en || snippetRaw).trim();
+  /* 那一侧为空时退回另一侧（别篇还没翻译时，中文侧是空的 —— 卡片该显示英文原文，
+     而不是一句「没有可显示的内容」） */
+  const body = lang === 'en' ? (en || zh) : (zh || en);
+  const src = paperTitle(target.paperId) || target.paperId;
+  let note = '';
+  if (!fields && busy) note = `正在从《${src}》读取这一段…`;
+  else if (!fields && failed) note = `这一段没读出来：${failed}`;
+  else if (!fields && !target.url) note = `这条引用没给可取原文的块 id —— 点「定位到原文」到《${src}》里看`;
+  else if (!fields) note = `这一段在《${src}》里没有可显示的内容`;
+  else if (!body && !fields.latex && !fields.caption && !fields.imageUrl) note = `这一段在《${src}》里没有可显示的内容`;
+  return {
+    title: (page ? '第 ' + page + ' 页 · ' : '') + (CITE_KIND[fields?.type || ''] || '正文'),
+    zh,
+    en,
+    bilingual: Boolean(zh) && Boolean(en) && zh !== en,
+    body,
+    imageUrl: fields?.imageUrl || '',
+    caption: fields?.caption || '',
+    latex: fields?.latex || String(ask.latex || '').trim(),
+    page,
+    rowId: String(ask.rowId || ''),
+    /** 跳转用的锚点：行 id 优先（别篇的行 id 与 block id 都是它自己那篇的编号） */
+    anchorId: String(ask.rowId || ask.blockId || ''),
+    anchor: ask.anchor,
+    /** 卡片里所有 markdown 都用**这条引用自己的** paper_id 渲染（图片 / 公式路径才对得上） */
+    paperId: target.paperId,
+    foreign: true,
+    /** 来源标记：读者一眼就知道这段不是本文的 */
+    source: `来自《${src}》`,
+    note,
+  };
+}
+
 function onCitePeekAsk(ask: CitePeekAsk): void {
-  ask = withCiteChain(ask);
+  /* 别篇的引用：**链要跳过**。 `withCiteChain` 是按**本文**的行池算的，拿别篇的编号去算
+     只会算出不相干的行；内容由 `foreignPeekView` 按它那篇现取。 */
+  const target = peekTargetOf(ask);
+  if (target.foreign) void loadPeekRemote(ask, Boolean(ask.click));
+  else ask = withCiteChain(ask);
   clearPeekTimers();
   /* 已经有同一处的卡（钉住的也算）：不再开第二张 —— 否则先钉住一张、再悬浮同一处，
      会叠出两张一模一样的内容（用户口径 2026-12-04）。 */
   const same = peekCards.find((c) => peekSig(c.ask) === peekSig(ask));
-  if (same) { same.open = true; return; }
+  if (same) { same.open = true; if (ask.click) pinCitePeek(same); return; }
   const loose = loosePeekCard();
   /* 有一张没钉住的（别处的）：立刻换内容（不必每次重等 320ms） */
-  if (loose) { loose.ask = ask; loose.open = true; return; }
+  if (loose) { loose.ask = ask; loose.open = true; if (ask.click) pinCitePeek(loose); return; }
+  /* 点出来的标号：**立刻开、并且钉住** —— 用户主动点开的，没有"停一下才弹"的意思，
+     移开鼠标也不该把它收走（要关就点 ✕）。悬浮那条路一个字都没动。 */
+  if (ask.click) {
+    peekSeq += 1;
+    peekCards.push({ key: 'peek-' + peekSeq, ask, open: true, pinned: true, lang: 'zh',
+                     z: newPeekZ() });
+    return;
+  }
   peekShowTimer = window.setTimeout(() => {
     peekShowTimer = 0;
     if (peekCards.some((c) => !c.pinned)) return;
@@ -320,6 +424,9 @@ function trimUnclosedMath(text: string): string {
 /** 一张卡要显示什么：整篇的行 / 表格 / 插图三选一（引用自带的 snippet 不参与） */
 function peekViewOf(card: PeekCard) {
   const ask = card.ask;
+  /* 别篇：本文的行 / 图 / 表里没有它 —— 内容按**那条引用自己的** paper_id 现取（已缓存） */
+  const target = peekTargetOf(ask);
+  if (target.foreign) return foreignPeekView(ask, target, card.lang);
   const rowId = rowAnchorId(String(ask.rowId || ''))
     || (ask.blockId ? String(reader.value?.block_rows?.[rowAnchorId(String(ask.blockId))] ?? '') : '');
   const row = rowId ? rowById.value.get(rowId) : undefined;
@@ -469,6 +576,13 @@ function peekViewOf(card: PeekCard) {
     latex,
     page, rowId,
     anchor: ask.anchor,
+    /* 下面这几项**同篇一律空 / false**，渲染一个字都不变；只有别篇那张卡会用到：
+       卡片里 markdown 的渲染用哪一篇的 paper_id、来源标记、一句"没有内容"的说明。 */
+    paperId: paperId.value,
+    foreign: false,
+    anchorId: rowId,
+    source: '',
+    note: '',
   };
 }
 
@@ -479,6 +593,15 @@ function peekViewOf(card: PeekCard) {
 function jumpFromPeek(card: PeekCard): void {
   const v = peekViewOf(card);
   card.pinned = true;
+  /* 别篇：**换一篇论文的阅读器**，走 `readerTarget` 那套深链（与知识库 / 笔记 / RAG 来源
+     「跳回原文」同一条口径）：?row=<它自己那篇的行 / 块 id>&page=<页>。
+     阅读器的 applyDeepLink 有三级解析 —— 行 id 直接命中 → 用 block_rows 把块 id 翻成行 →
+     都不行退到那一页。所以这里给的行 / 块 id 是**那篇的**编号，能精确到块就精确，
+     认不出也至少落到它那一页。 */
+  if (v.foreign) {
+    void router.push(openTab(readerTarget(v.paperId, v.anchorId, v.page || undefined)) as never);
+    return;
+  }
   void focusRow(v.rowId, { page: v.page || undefined, flash: true });
 }
 const brief = ref<BriefPayload | null>(null);
@@ -9608,6 +9731,10 @@ function renderMarkdown(text?: string | null) {
       @close="closePeekCard(card)"
     >
       <template #head-mid>
+        <!-- 来源标记（**只有别篇才有**）：这段内容不来自当前论文，读者得一眼看出来。
+             同篇的空串不渲染，标题行与以前一字不差。 -->
+        <span v-if="peekViewOf(card).source" class="cite-peek-src"
+              :title="peekViewOf(card).source">{{ peekViewOf(card).source }}</span>
         <!-- 中/EN 切换放在**标题栏**（用户口径 2026-12-04）：正文里那块太占高度，
              看起来也像一段内容。它是内容口径的开关，不属于头部那组动作按钮，
              所以单独设计（小分段钮），不与 .fc-btn 混在一起。 -->
@@ -9634,15 +9761,18 @@ function renderMarkdown(text?: string | null) {
         <img v-if="peekViewOf(card).imageUrl" class="cite-peek-img"
              :src="assetUrl(peekViewOf(card).imageUrl)" :alt="peekViewOf(card).caption || ''" />
         <div v-if="peekViewOf(card).caption" class="cite-peek-cap md small"
-             v-html="mdToHtml(peekViewOf(card).caption, paperId)" />
+             v-html="mdToHtml(peekViewOf(card).caption, peekViewOf(card).paperId)" />
         <!-- 这条引用具体指向哪一句 / 哪条公式：同一行里的两条引用靠它区分 -->
         <div v-if="peekViewOf(card).latex" class="cite-peek-quote cite-peek-formula md small"
-             v-html="mdToHtml('$$' + peekViewOf(card).latex + '$$', paperId)" />
+             v-html="mdToHtml('$$' + peekViewOf(card).latex + '$$', peekViewOf(card).paperId)" />
 
         <div v-if="peekViewOf(card).body" class="cite-peek-md md small"
-             v-html="mdToHtml(peekViewOf(card).body, paperId)" />
+             v-html="mdToHtml(peekViewOf(card).body, peekViewOf(card).paperId)" />
+        <!-- 别篇取不到内容时的那一句人话（读取中 / 读失败 / 那篇也没有这段）。
+             同篇这里是空串，落到下面那条老文案 —— 同篇一个字都没变。 -->
+        <div v-if="peekViewOf(card).note" class="tiny faint">{{ peekViewOf(card).note }}</div>
         <!-- 有 latex（精确公式）时也算"有内容"：正文被上面那条公式去重清空后，不该再落一句"没有内容" -->
-        <div v-if="!peekViewOf(card).body && !peekViewOf(card).imageUrl && !peekViewOf(card).latex"
+        <div v-else-if="!peekViewOf(card).body && !peekViewOf(card).imageUrl && !peekViewOf(card).latex"
              class="tiny faint">
           这一段没有可显示的内容（可能是图片页或纯公式块）
         </div>
@@ -10078,6 +10208,15 @@ function renderMarkdown(text?: string | null) {
 .cite-peek-img {
   display: block; width: 100%; max-height: 200px; object-fit: contain;
   border-radius: var(--radius-sm); background: var(--bg-sunken);
+}
+/* 来源标记（别篇的引用才有）：标题行里紧跟标题的一枚小胶囊，说清「这段不是本文的」。
+   与 .cite-peek-lang 同一行，所以 max-width 收着 + 省略号：标题再长也不把右侧那排按钮挤走。
+   ⚠️ 插槽内容在**父组件作用域**渲染（FloatingCard 的 scoped 样式到不了），几何得写全。 */
+.cite-peek-src {
+  flex: 0 1 auto; min-width: 0; max-width: 132px; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis; padding: 2px 7px; border-radius: 999px;
+  font-size: calc(10.5px * var(--ts, 1)); color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .cite-peek-cap { color: var(--text-dim); }
 .cite-peek-md { max-height: 190px; overflow: auto; }
