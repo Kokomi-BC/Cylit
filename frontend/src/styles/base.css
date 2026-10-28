@@ -101,6 +101,9 @@ mark { color: inherit; }
 /* 一条高亮的**中间片段**不要圆角（首尾才留）：8px 圆角会把 14~20px 宽的公式片咬成一个小圆点，
    两边露白。类由 `utils/domMarks.ts` 的 `levelRunBand` 按 `data-hl` 分组后打上。 */
 mark.hl.hl-mid { border-radius: 0; }
+/* 整条带子的首片只圆**左**、末片只圆**右**：两侧都圆的话，首片朝内那一侧也在接缝上挖一个白角。 */
+mark.hl.hl-first { border-radius: var(--r-xs) 0 0 var(--r-xs); }
+mark.hl.hl-last { border-radius: 0 var(--r-xs) var(--r-xs) 0; }
 /* 每种颜色给**两个**值：`--hl-bg` 是荧光笔的底色（带 alpha，不遮字形），
    `--hl-ink` 是同色的实色（下划线 / 公式色带要用 —— 45% 的底色当线太淡，看不见）。
  *

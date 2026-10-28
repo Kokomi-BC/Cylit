@@ -229,7 +229,7 @@ function makeMark(color: string, id: string): HTMLElement {
 }
 
 /**
- * 行内公式的高亮怎么画：**高的**换成画在公式本体上（`hl-tall`），**矮的**留在外壳上并按探出量补高。
+ * 行内公式的高亮怎么画：**高的**换成画在公式本体上（`hl-tall`），**矮的**留在外壳上（与文字同高）。
  *
  * 为什么要量：小公式（下标、`b = 2`）与高公式（分式、大括号）要两种不同的画法，而"高不高"
  * 只有渲染之后才量得出来。实测（16px 正文、行高 1.78）：
@@ -245,20 +245,9 @@ function makeMark(color: string, id: string): HTMLElement {
  */
 const TALL_SLACK = 5;
 function bandInlineFormula(el: HTMLElement, mark: HTMLElement): void {
-  const box = el.getBoundingClientRect();
-  const shell = mark.getBoundingClientRect();
-  if (box.height - shell.height > TALL_SLACK) {
+  if (el.getBoundingClientRect().height - mark.getBoundingClientRect().height > TALL_SLACK) {
     mark.classList.add('hl-tall');
-    return;
   }
-  /* 矮公式：底色仍在**外壳**上（与前后文字同高、接得住），但外壳的带子常常比公式本身矮一两像素 ——
-     下标（`_\\text{prod}` 实测比带子低 1.8px）、`b = 2`（低 2.8px）于是从带子下沿探出去，
-     看着像"公式没被高亮"。行内盒子的**上下内边距只影响底色、不影响行高**，所以按量到的探出量
-     把带子补高几像素即可（上限 6px：再高就会糊到相邻行）。 */
-  const up = Math.min(6, Math.max(0, Math.ceil(shell.top - box.top)));
-  const down = Math.min(6, Math.max(0, Math.ceil(box.bottom - shell.bottom)));
-  if (up) mark.style.paddingTop = `${up}px`;
-  if (down) mark.style.paddingBottom = `${down}px`;
 }
 
 /** 被 `bandFormula` 挪过位置的编号角标（拆标记时要挪回去） */
@@ -534,18 +523,17 @@ export function markRanges(root: HTMLElement | null, marks: DomMark[]): number {
 }
 
 /**
- * 把**同一条高亮**的所有片段补成同一高度。
+ * 收尾：一条高亮在 DOM 里是**一片片**的（被加粗 / 公式 / 链接切断），这一步按 `data-hl` 分组，
+ * 只给**首尾两片**留圆角，中间一律方角 —— 详见下面注释里的实测。
  *
- * 为什么要这一步：公式片段按自身探出量补了上下内边距（见 `bandInlineFormula`），补完之后
- * 公式那一片比前后文字那几片高出一两像素 —— 一条带子的下沿就成了台阶（用户口径 2026-12-28：
- * 高亮"不连续"）。同一条高亮的片段共享 `data-hl`，所以取这一条里的**最大**补高量，回写给
- * 所有片段：整条带子一起下沉，下标被盖住，下沿是一条直线。
- *
- * 行内盒子的上下内边距**不进布局**（不影响行高、不发生折行位置变化），所以这一步是纯视觉的。
+ * ⚠️ 曾经在这里按"公式探出量"补上下内边距，想把下标也盖住。那条路**撤掉了**：16px 正文下
+ * `mark` 的行内盒已经是 24px、行距只有 28.5px，补 3px 就吃掉一半行间缝；用户把字号调大之后
+ * 两行的带子直接连成一块厚板（2026-12-28 第三次截图）。带子跟**文字行**走、下标从带子下沿探出
+ * 2~3px，是所有高亮工具的正常形态；要那个"盖住下标"的效果得拿行间缝去换，代价更大。
  */
 function levelRunBand(root: HTMLElement): void {
   const marks = [...root.querySelectorAll<HTMLElement>('mark.hl[data-hl]')];
-  if (!marks.length) return;
+  if (marks.length < 2) return;
   const groups = new Map<string, HTMLElement[]>();
   for (const m of marks) {
     const id = m.getAttribute('data-hl') ?? '';
@@ -554,16 +542,18 @@ function levelRunBand(root: HTMLElement): void {
     groups.set(id, list);
   }
   for (const list of groups.values()) {
-    const top = Math.max(...list.map((m) => parseFloat(m.style.paddingTop || '0') || 0));
-    const bottom = Math.max(...list.map((m) => parseFloat(m.style.paddingBottom || '0') || 0));
+    /* 圆角**只留整条带子的首尾两片**。为什么：`mark.hl` 是 8px 圆角，而一条高亮在 DOM 里
+       是**一片片**的（被加粗 / 公式 / 链接切断），一片行内公式只有 14~20px 宽 —— 8px 圆角把
+       左右两端各咬掉 8px，那一小片就成了一个圆点，两边露出白口袋（用户口径 2026-12-28：每个
+       行内公式四周一圈白、整条看着是断的）。中间的片一律方角，相邻两片靠 1px 内边距叠在一起，
+       接缝就没了。 */
+    /* 首片只圆**左**、末片只圆**右**（各自朝外那一侧）。上一版是"首尾整片都圆、中间方角"，
+       于是首片朝内那一侧也圆 —— 那正是 `图 5：TURBOQUANT` 与它后面那枚 `prod` 之间那道
+       白缝（2026-12-28：近了看才发现缝在首片的内侧角上）。单片的高亮保持默认的整圈圆角。 */
+    if (list.length === 1) return;
     list.forEach((m, i) => {
-      if (top > 0) m.style.paddingTop = `${top}px`;
-      if (bottom > 0) m.style.paddingBottom = `${bottom}px`;
-      /* 圆角**只留整条带子的首尾两片**。为什么：`mark.hl` 是 8px 圆角，而一条高亮在 DOM 里
-         是**一片片**的（被加粗 / 公式 / 链接切断），一片行内公式只有 14~20px 宽 —— 8px 圆角
-         把左右两端各咬掉 8px，那一小片就成了一个圆点，两边露出白口袋（用户口径 2026-12-28：
-         每个行内公式四周一圈白、整条看着是断的）。中间的片一律方角，相邻两片靠 1px 内边距
-         叠在一起，接缝就没了。 */
+      m.classList.toggle('hl-first', i === 0);
+      m.classList.toggle('hl-last', i === list.length - 1);
       m.classList.toggle('hl-mid', i > 0 && i < list.length - 1);
     });
   }
