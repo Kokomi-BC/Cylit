@@ -17140,3 +17140,73 @@ prod 真模型四问（/v1/ask + 内部令牌，SSE 逐帧解析工具轨迹）�
 - `test_sweep_orphans_reports_then_deletes` 的**数据库侧**仍作用真库（磁盘已隔离）：要连库隔离得引入临时库方案。
 - `docs/agent-接入规划.md` 与 dev-log 老表格里仍写着已删的 `GET /agent/library`（历史记录，不回改）。
 - GitHub 仍积压（代理连不上），改动只在本地与 prod 一处。
+
+# 263 · 回答配图放开到「任意 https」，跨论文图片不再被删成占位（2026-12-28 追补八）
+
+用户截图（对话里问「能否引用 transformer 的图片」）：回答里写着
+「（配图已省略：Attention Is All You Need · Figure 1: The Transformer - model architecture（第 3 页））」。
+
+## 根因：不是模型写错，是我们自己的清洗器删了它
+
+prod 日志（2026-10-28 20:06:35）铁证 —— 模型写的是**完全正确的受控地址**：
+
+```
+WARNING backend.agent.sanitize | 回答里的图片地址不在白名单，换成文字占位：
+  paper=turboquant-online-vector-iclr-26
+  url=/api/v1/papers/attention-cleanroom/figures/region/3/0?v=7080945bc0
+```
+
+`strip_foreign_images(text, paper_id)` 的白名单只按**当前论文**拼前缀，于是模型引用它这一轮刚用
+`paper_id` 读过的**另一篇**论文的裁图被判成外链。这条白名单本来是两次真事故攒的（模型嵌过
+`arxiv.org/abs/…` 那种论文页地址、以及站外图会泄露 referer/IP），所以不能简单放开。
+
+## 用户拍板的新口径（三类）
+
+| 输入 | 处理 |
+|---|---|
+| 本站受控图（**任意论文** `/api/v1/papers/<id>/{figures,pages}/…`、`/papers/<id>/…`） | 规整成绝对路径后放行（含 `/cylit` 前缀、缺前导 `/` 的畸形写法） |
+| 站外 `https://…`（含协议相对 `//host/x.png`） | 原样放行，`log.info` 记域名与 alt |
+| `http://…` | 降级成链接 `[alt](url)`（https 站点上必然是混合内容裂图） |
+| `data:` / `blob:` / `javascript:` / `file:` | 整条删成「（配图已省略：alt）」，URL 不留在回答里 |
+
+配套删掉放宽后已成死代码的 `RefRegistry.paper_ids()` 与 `strip_foreign_images` 的
+`allowed_paper_ids` 形参（`runtime` 调用点回到两参）。
+
+## 前端接住代价
+
+放开站外图之后有两个代价必须由前端兜：站外图会让**浏览器直连第三方**（referer/IP 泄露）、模型写错地址会留裂图。
+新增 `frontend/src/utils/mdImages.ts`：
+
+- `hardenAnswerImages(root)`：每张图加 `referrerpolicy=no-referrer` / `loading=lazy` / `decoding=async`；
+  `error`（含监听器挂上之前就失败的）时把图换成 `<a target=_blank rel=noopener noreferrer>` + 一句
+  「（图没加载出来，点开看原图）」；外层已是链接时不嵌第二层；幂等。
+- `watchAnswerImages(root)`：MutationObserver（childList+subtree、rAF 合并）+ 捕获阶段 `error`，
+  接住流式增量里新插入的图。接在 `ReaderChat.vue` 的消息容器上，只覆盖 `.md body` 回答区。
+
+## 实测
+
+```
+清洗器单测 9 条（本篇规整 / 别篇 / 三条受控路线 × 两篇 / 站外 https 原样 / http 降级 /
+                五种危险 scheme 全删 / 老断言改为放行但保留 data: 护栏）
+全量 pytest：1966 passed / 0 failed
+前端：vue-tsc + build 绿；frontend_check.py 169 项全过
+prod 真模型两轮（同一会话：先读 attention-cleanroom 第 3 页 → 再问「能否引用 transformer 的图片」）：
+  轮1 工具 kb_search → translate_get；轮2 工具 figure_list
+  轮2 回答里 **2 张图**（占位出现 0 次）：
+    ![Figure 1: The Transformer - model architecture.](/api/v1/papers/attention-cleanroom/figures/region/3/0?v=7080945bc0)
+    ![Figure 2: (left) Scaled Dot-Product Attention. …](/api/v1/papers/attention-cleanroom/figures/region/4/0?v=c12d7ccfc0)
+  两个地址都是 200 image/png（426 KB / 212 KB）
+```
+
+## 顺带修掉的一条假红
+
+`tests/test_page_edit.py` 的两条「回滚必须逐字节回到改动前」用**整份 JSON** 比对，而回滚会重写秒级
+`updated_at`：单跑必绿、全量跑到秒边界就红（实测 `12:14:41` vs `12:14:42`）。改成比对前把两个时间
+字段归一，行/块内容仍逐字节比。
+
+## 代价与遗留
+
+- 流式增量期间原始图片 markdown 会先推一次，`done` 到达后覆盖为最终结果（改造前如此）；
+  已换成链接的裂图在 v-html 重建后会短暂变回 `<img>`，若再失败会再换一次（结果一致，可能闪一帧）。
+- 工具/思考段的 lead 文本与会话列表预览里的图不加固（只在 `.md body` 回答区调用）。
+- 没做站外图的服务端代理/缓存（那属于另一件事）。
