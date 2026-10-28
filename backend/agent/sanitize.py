@@ -186,17 +186,12 @@ def sanitize_many(texts: Iterable[str], registry: RefRegistry) -> list[str]:
 
 #: Markdown 图片（含 ``![alt](url "title")`` 形式）
 _IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\(\s*<?(?P<url>[^)\s>]+)[^)]*\)")
-#: 允许的受控地址：**只能是本论文自己的受控图**（region 裁图 / 整页图 / 静态裁图）。
-#: 2026-12-07 放宽一次：用户那次配图全被删成「（配图已省略：…）」，而模型写的到底是哪种地址
-#: 我看不出来（清洗器把原文吃掉了）。与其猜，不如把"本论文的所有受控图路径"都放行；
-#: 站外地址仍然一律拒绝（域名在 `_controlled_image_path` 里已经先丢掉了）。
-_ALLOWED_IMAGE_PREFIXES = (
-    "/api/v1/papers/{paper_id}/figures/",
-    "/api/v1/papers/{paper_id}/pages/",
-    "/papers/{paper_id}/",
-)
-#: 兼容旧名（单条前缀），避免其它引用处炸掉
-_ALLOWED_IMAGE = _ALLOWED_IMAGE_PREFIXES[0]
+#: 地址里的 scheme（``https://…`` → ``https``；``data:…`` → ``data``；相对路径 → 空串）
+_SCHEME_RE = re.compile(r"^(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*):")
+#: 本站受控图路径（region 裁图 / 整页图 / 静态裁图）—— **任意论文**，不再按 paper_id 拼前缀。
+#: 2026-12 用户拍板：放行任意 https 图，这个正则只负责"把本站相对路径认出来并规整成绝对路径"。
+_CONTROLLED_IMAGE_RE = re.compile(
+    r"^/(?:api/v1/papers/[^/]+/(?:figures|pages)|papers/[^/]+)/")
 #: 规整图片地址时用来削掉部署前缀的锚点（`/cylit/api/v1/papers/…` → `/api/v1/papers/…`）
 _API_PATH_MARK = "/api/v1/papers/"
 
@@ -207,7 +202,8 @@ def _controlled_image_path(url: str) -> str:
     为什么需要：模型会把受控地址写歪 —— 实测 `api/v1/papers/<id>/figures/region/7/0?v=…`
     少了开头那个 `/`，于是 `startswith("/api/v1/…")` 判不出来，一张本来完全合法的裁图被当成
     外链删成了「（配图已省略：…）」（用户 2026-11-26 报的正是这个）。只要**路径**对得上就补回 `/`；
-    写成整条 `https://…/api/v1/…` 的只取路径部分，域名一律丢掉 —— 不能因为它长得像就放行站外地址。
+    写成整条 `https://…/api/v1/…` 的只取路径部分，域名丢掉 —— 认的是**路径**，不是域名
+    （站外 https 由调用方按 scheme 单独放行，与本函数无关）。
     """
     raw = (url or "").strip()
     if not raw:
@@ -229,25 +225,59 @@ def _controlled_image_path(url: str) -> str:
     return raw
 
 
+def _image_scheme(url: str) -> str:
+    """地址的 scheme（小写）；相对路径 / 协议相对地址返回空串。"""
+    match = _SCHEME_RE.match(url or "")
+    return match.group("scheme").lower() if match else ""
+
+
+def _domain_of(url: str) -> str:
+    """``https://a.b/c`` → ``a.b``（只用于日志，不参与判断）。"""
+    if "://" not in (url or ""):
+        return ""
+    rest = url.split("://", 1)[1]
+    return rest.split("/", 1)[0].split("?", 1)[0]
+
+
 def strip_foreign_images(text: str, paper_id: str) -> str:
-    """删掉回答里的非受控图片（外链 / ``data:`` / ``blob:`` / 别的论文）。
+    """清洗回答里的图片地址：**放行任意 https**，本站受控图规整成绝对路径。
 
-    为什么必须在服务端删而不是靠提示词：模型会**说实话地**去配一张"它认识的"图
-    （实测：讲 Transformer 架构图时嵌了 ``https://arxiv.org/abs/1706.03762`` ——
-    那是论文地址，根本不是图片）。前端渲染出来就是一个裂图，而且这条链路会把用户
-    引到站外。规则只能有一条：**只允许本论文自己的受控裁图地址**。
+    2026-12 用户拍板的规矩（取代"只放行本轮读过的论文"那版，也比"只放行本论文"宽）：
+
+    ① 本站受控图（**任意论文**的 ``/api/v1/papers/<id>/{figures,pages}/…``、``/papers/<id>/…``）
+       → 放行，并先过 ``_controlled_image_path`` 规整成绝对路径：模型常把地址写歪
+       （带 ``/cylit`` 部署前缀、缺开头 ``/``、写成整条 ``https://…`` 的），不规整就加载不出来。
+       与 2026-10-28 那次生产 bug 对应：当时白名单按**当前论文**拼前缀，于是模型引用它刚读过的
+       另一篇（``attention-cleanroom``）的裁图被删成「（配图已省略：…）」。
+    ② 站外 ``https://…`` → **放行且原样保留**（不改写域名、不猜它到底是不是一张图）。
+    ③ ``http://…`` → **降级成链接** ``[alt](url)``：https 站点上渲染 http 图必然是混合内容裂图，
+       留个能点的链接比整条删掉更有用。
+    ④ ``data:`` / ``blob:`` / ``javascript:`` / ``file:`` 以及其它非 http(s) scheme
+       → **整条删成纯文本**，URL 不留在回答里（这些 scheme 可执行 / 可读本地文件，不是"配图"）。
+
+    ``paper_id`` 不再参与放行判断（2026-12 起放行任意 https），只写进日志当排查上下文 ——
+    所以这个函数对任何论文都给出同一个结果，跨篇配图不再被误删。
     """
-    allowed = tuple(p.format(paper_id=paper_id) for p in _ALLOWED_IMAGE_PREFIXES)
-
     def repl(match: re.Match) -> str:
         alt = (match.group("alt") or "").strip() or "插图"
-        path = _controlled_image_path(match.group("url"))
-        if path.startswith(allowed):
-            # 用**规整后的绝对地址**重写：模型少写一个 `/` 时也能真的加载出来
+        raw = (match.group("url") or "").strip()
+        scheme = _image_scheme(raw)
+        # ① 本站受控图（任意论文）：先规整，再原样用规整后的绝对路径
+        path = _controlled_image_path(raw)
+        if _CONTROLLED_IMAGE_RE.match(path):
             return f"![{alt}]({path})"
-        # 被删掉的地址**记下来**：上一次排查就是查不到"模型到底写了什么"，只能靠猜
-        log.warning("回答里的图片地址不在白名单，换成文字占位：paper=%s url=%s",
-                    paper_id, path[:200])
+        # ② 站外 https（含协议相对的 //host/x.png：在我们这种 https 站点上同样是 https）
+        if scheme == "https" or (not scheme and raw.startswith("//")):
+            log.info("放行站外图片：domain=%s alt=%s", _domain_of(raw) or "-", alt[:40])
+            return f"![{alt}]({raw})"
+        # ③ http：降级成链接，不渲染成图
+        if scheme == "http":
+            log.info("回答里的图片是 http，降级成链接（https 站点上会混合内容裂图）："
+                     "paper=%s url=%s", paper_id, raw[:200])
+            return f"[{alt}]({raw})"
+        # ④ 其余：整条删成纯文本。**记一笔**，否则下次还是只能猜"模型到底写了什么"
+        log.warning("回答里的图片地址被删（非 https、非本站受控图）："
+                    "paper=%s scheme=%s url=%s", paper_id, scheme or "-", raw[:200])
         return f"（配图已省略：{alt}）"
 
     return _IMAGE_RE.sub(repl, text or "")
