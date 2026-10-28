@@ -3196,9 +3196,12 @@ function placeSub() {
   const h = el.offsetHeight || SUB_H;
   let wantTop = row.top;
   if (wantTop + h > vh - 8) wantTop = Math.max(8, vh - 8 - h);
-  // 间距 12（原来是 8）：根浮层那圈大阴影有一半落在 8px 里，看起来像「被浮层压住」
-  let wantLeft = row.right + 12;
-  if (wantLeft + w > vw - 8) wantLeft = row.left - 12 - w;
+  /* 间距 **4px**：用户口径 2026-12-27「二级菜单应与一级菜单紧挨着」。
+     4 = 根浮层的 `padding: 3px` + 1px 描边位，于是二级菜单的左边缘几乎贴着一级菜单的右边缘；
+     再大就显得两块飘着（原来写的是 12）。右边放不下就翻到左侧，同样贴 4px。 */
+  const GAP_SUB = 4;
+  let wantLeft = row.right + GAP_SUB;
+  if (wantLeft + w > vw - 8) wantLeft = row.left - GAP_SUB - w;
   if (wantLeft < 8) wantLeft = Math.max(8, vw - 8 - w);
   const r = el.getBoundingClientRect();
   subPos.value = {
@@ -3915,7 +3918,8 @@ defineExpose({ uploadFiles, ensureThread });
                既占高度又不好看 —— 每一条自己带厂商图标和「厂商 · 模型 id」副标题，够认了）；
                也不再先弹「模型 / 推理等级」两行的中转层。推理等级是列表底部的一行
                （still 侧向飞出，不丢功能）。 -->
-          <div v-if="menuOpen" class="pick-pop pick-pop-model" @mouseenter="hoverPick" @mouseleave="leavePick">
+          <!-- 材质走全站那一份玻璃（`styles/base.css` 的 `.glass-menu`）：与「更多」/ 右键菜单同一块 -->
+          <div v-if="menuOpen" class="pick-pop pick-pop-model glass-menu" @mouseenter="hoverPick" @mouseleave="leavePick">
             <div class="pick-model-list">
               <div v-if="modelReadonly" class="pick-empty">
                 <span class="pick-item-name">未单独配置</span>
@@ -3951,7 +3955,7 @@ defineExpose({ uploadFiles, ensureThread });
                子菜单于是被那圈弧线压住，看起来像浮层没盖住指示器。挪到 body 之后
                它与所有浮层同层比较，正文里任何指示器都盖不住它。 -->
           <Teleport to="body">
-          <div v-if="menuOpen && subStage" ref="subEl" class="pick-sub"
+          <div v-if="menuOpen && subStage" ref="subEl" class="pick-sub glass-menu"
                :style="{ left: `${subPos.left}px`, top: `${subPos.top}px`, zIndex: subZ }"
                @mouseenter="hoverPick" @mouseleave="leavePick">
             <div v-if="subStage === 'model'" class="pick-sub-list">
@@ -4707,8 +4711,8 @@ defineExpose({ uploadFiles, ensureThread });
   position: absolute; left: 0; right: auto; bottom: calc(100% + 5px); z-index: 9;
   width: max-content; min-width: 176px; max-width: 288px;
   display: flex; flex-direction: column; gap: 1px; padding: 3px;
-  border-radius: 11px; border: 1px solid var(--border);
-  background: var(--bg-elev); box-shadow: var(--shadow-flyout);
+  border-radius: 11px;
+  /* 材质（底色 / 模糊 / 阴影 / 无描边）走 `base.css` 的 `.glass-menu`，与「更多」菜单同一块玻璃 */
 }
 .pick-row {
   display: flex; align-items: center; gap: 4px; width: 100%; height: 26px; padding: 0 6px;
@@ -4733,8 +4737,8 @@ defineExpose({ uploadFiles, ensureThread });
      仍然低于弹窗遮罩（150）、底部操作表（319/320）与选区手柄（330）：子菜单只该压住
      正文里的浮层与指示器，不该压住真正"要你确认"的东西。 */
   position: fixed; z-index: 92; width: 200px; box-sizing: border-box; isolation: isolate;
-  padding: 3px; border-radius: 11px; border: 1px solid var(--border);
-  background: var(--bg-elev); box-shadow: var(--shadow-flyout);
+  padding: 3px; border-radius: 11px;
+  /* 同上：材质由 `.glass-menu` 给，这里只管几何与层级 */
 }
 /* 下拉框本体：定高 + 内部滚动（模型多了不能把浮层顶出屏幕） */
 .pick-pop-model { width: 280px; }

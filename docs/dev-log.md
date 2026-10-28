@@ -16602,3 +16602,24 @@ maxH 不再是常量 420，而是 room：326 / 327 …
 每张卡 h = 149 / 157 / 186 / 223 / 256 …，body scrollHeight == clientHeight（**没有一处被裁**）
 anyOffScreen = false（改前有一例 bottom=876 > 820）
 ```
+---
+
+# 252 · 模型菜单换成同一块玻璃，二级菜单紧贴一级（2026-12-27）
+
+用户口径：**「模型菜单使用更多菜单的样式和毛玻璃效果，二级菜单应与一级菜单紧挨着」**。
+
+## 改法
+
+- 一级（`.pick-pop`，模型列表 + 「推理等级」那一行）与二级（`.pick-sub`，档位列表）都加 `glass-menu`，
+  并删掉各自写的 `background: var(--bg-elev)` + `1px border` —— 材质只留 `base.css` 那一份；
+- `placeSub` 的间距 12 → **4**：`4 = 根浮层 padding 3 + 1px 描边位`，于是二级菜单左边缘正好贴着一级菜单右边缘；
+  右边放不下翻到左侧时同样贴 4。
+
+## 实测（无头 Chrome，进对话后点开模型胶囊、悬停「推理等级」）
+
+```
+一级  rect x=10 right=290 (w=280)   blur(48px) saturate(2.6)  border 0px   class 带 glass-menu
+二级  rect x=291 right=491 (w=200)  blur(48px) saturate(2.6)  border 0px   class 带 glass-menu
+二级距一级右边缘 gapFromRoot = 1px（贴住）；距那一行右边缘 4px
+垂直方向：列表高 181 > 那一行以下的空间，所以被上移到 y=631（不越出视口）
+```
