@@ -17270,3 +17270,45 @@ prod 同进程内跑真实清洗链路（结论不靠猜）：
 - 淘汰是 mtime FIFO；url 参数没有长度上限（可被用来刷缓存键）；同图不同 query 各存一份。
 - DNS 解析与真正连接是两次动作（TOCTOU），彻底固定 IP 要自建 transport（模块 docstring 已写明）。
 - 另一处已知：`figure_image_get` 之类工具若直接回图像块（而不是 URL），模型未必会嵌 markdown —— 模型行为，不属本轮。
+
+# 265 · 提示条（toast）：毛玻璃材质、按时长分级、删笔记只弹一条（2026-12-28 追补十）
+
+用户三条口径连着来，最后落在这一版。
+
+## 一、毛玻璃 + 去描边
+
+`.toast` 换成与右键菜单 `.ctx-panel` **同一套材质**：同一组 `--glass-bar-top/bottom` 令牌 + 同一套
+`backdrop-filter: blur(48px) saturate(2.6)`，`border: 0` 去掉描边（玻璃靠投影与模糊分界，不靠线）。
+底子仍是「主色 7% + `--bg-elev`」，换肤跟着走。
+
+验证方式：把编译后的 `index-*.css` 灌进一张探针页（棋盘格 + 大字底图），实测 `border-width: 0px`、
+`backdrop-filter: blur(48px) saturate(2.6)`，截图里斜纹与大字**能透过卡片且是模糊的**。
+
+## 二、停留时长：按级别递加
+
+```
+info / ok   3.5s
+warn        5.0s
+error       6.1s
+```
+
+越严重的提示往往越长（出错那句常带「为什么 + 怎么办」），读不完等于没提示；而一句「已保存」挂太久会挡右上角。
+停留时间**只由级别决定**：调用点里 73 处显式 `ttl` 已失效（形参改名 `_ttl` 保留，只为不动那 73 行）。
+
+## 三、删笔记只弹一条通知
+
+`deleteHighlightIds()` 以前自己会弹「已删除 N 处高亮」，而删笔记会连带删它挂的那处高亮 ——
+一次动作两条 toast，2 秒内叠着闪两下，像删了两样东西。现在：
+
+- `deleteHighlightIds(ids, { quiet })`：调用方要合成一条时不自己弹；
+- 卡内「删除笔记」→ 只弹「笔记与对应高亮已删除」（没有高亮时仍是「笔记已删除」）；
+- 侧栏多选批量删除 → 只弹「已删除 N 条笔记」/「已删除 N 条，M 条失败」。
+
+## 实测
+
+```
+vue-tsc + build 绿；frontend_check 169 项全过
+（第一次跑出现过 1 条假红：「点别处右键菜单自己收掉 还开着=True」—— 该探针与本次改动无关，空跑复测 169/169）
+编译产物核对：.toast{…border:0…backdrop-filter:blur(48px) saturate(2.6)}；3500 / 5000 / 6100 三档都在
+进出场动画仍在：enter opacity 220ms + transform 260ms、leave 260ms、move 260ms；reduced-motion 压成 1ms
+```
