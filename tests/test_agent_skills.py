@@ -71,12 +71,23 @@ def test_builtin_skills_materialized_with_descriptions(tmp_path: Path) -> None:
     assert "answer-paper" in manifest, "仓库里的自带技能没有被物化进技能库"
     assert "reader-state" in manifest, "阅读状态技能没被物化（reader_state 的手册）"
 
+    # 期望集合直接**扫磁盘上的自带技能仓库**（跳过以点开头的临时/禁用区）：
+    # 数目对不上不再是红色的理由 —— 只有"仓库里有、技能库里没有"（物化漏了）或
+    # "技能库里多出来"才会红。以后加技能只要真的物化进去，这条就一直是绿的。
+    expected = {path.name for path in cfg.agent_builtin_skills_dir.iterdir()
+                if path.is_dir() and not path.name.startswith(".")}
+
     skills = skills_store.list_skills(cfg)
-    # 自带技能是**逐个数**的：改名/拆分时这条会立刻红，提醒同步 list 与文档
-    assert len(skills) == 13
+    assert {item["name"] for item in skills} == expected, \
+        "物化出来的技能与自带仓库的目录名没有逐名对齐"
+    assert set(manifest) == expected, "manifest 登记的自带技能与仓库目录名没有逐名对齐"
     assert all(item["builtin"] and item["enabled"] for item in skills)
     assert all(item["description"] for item in skills), "自带技能的 description 应当都解析得出来"
     assert all(item["chars"] > 0 for item in skills)
+    # name 与目录名一致：每个技能的 frontmatter 名字就是它物化后所在目录的名字
+    for name in sorted(expected):
+        text = (cfg.agent_skills_dir / name / "SKILL.md").read_text(encoding="utf-8")
+        assert skills_store.parse_frontmatter(text)[0] == name
     # manifest 记的是内容哈希（用来认"这是自带技能" + "用户改过没有"）
     assert all(len(value) == 64 for value in manifest.values())
 

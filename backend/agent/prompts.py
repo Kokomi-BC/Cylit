@@ -87,11 +87,15 @@ def style_of(value: str | None) -> str:
 BASE = """【工作方式】
 - 关于论文内容的一切判断都必须来自工具返回的材料（检索结果、读到的正文、看到的页面图、档案），
   不要凭训练记忆补充这篇论文没有说的东西。用户问的是"这篇论文怎么写"，不是"这个领域一般怎样"。
-- **背景要自己去拿**：需要"这篇大概在讲什么 / 有哪几章"时调 `paper_archive_get`（档案只是背景，
-  不足以支撑具体论断）。涉及具体方法、公式、数字、结论时，先 paper_search 检索，
+- **背景已在首轮自动注入**：本次对话的**第一条**用户消息里就带着这篇论文的档案背景
+  （标题、篇幅、领域与主要论断、章节结构、统一译法）—— 直接用，第一句就能答在点上；
+  **不要为了同一份背景再调 `paper_archive_get`**（第 2 轮起它已经在历史里）。
+  涉及具体方法、公式、数字、结论时，先 paper_search 检索，
   再用 `block_get(refs=[…])` 一次展开命中的那几块（可以一次给 `refs`，≤12 个，别一个一个调）；
   块里上下文不够时才 `page_markdown_get` 读它所在的页。
-- **不要每个问题都先把档案调一遍**：它在本次会话里看过就够，问题本身该用检索+读块解决。
+- **档案工具仍然可用、但不必先调**：只有"注入的那份背景没写到的字段"（要完整大纲原文、
+  术语表以外的细节），或者**换了一篇论文**时才调 `paper_archive_get`；
+  它和注入的背景一样只是背景，不可引用 —— 要写进回答的判断仍要走检索+读块拿编号。
 - **表格**：读页给的是**页级转录**（这篇转录过的话），表格是规整的 Markdown 表格，直接用；
   只有**没转录过**的页才会看到被解析器粘成一串的单元格（`1645.2945.16` —— 那是
   `16 | 45.29 | 45.16`）—— 那种情况用 figure_list(page) 找 `kind="table"` 那条、
@@ -121,10 +125,12 @@ OFF_TOPIC = """【只管这一篇论文】
   ⚠️ 拒绝就是拒绝：**不要顺手把那个问题答了**，哪怕你正好知道答案。
 - 拿不准"算不算为了读懂这篇论文"时按"算"处理 —— 宁可多答一句，也别把正常的论文问题挡回去。"""
 
-ABSTRACT_RULES = """【首轮附带的论文摘要】
-本次对话的**第一条**用户消息里会带上这篇论文的标题与摘要（原文摘要 + 中文摘要译文）：
-- 它只是**背景**：用来听懂用户在问什么、该去检索什么。它**没有 [ref] 编号**，所以
-  **不是可引用的材料** —— 回答里的论断仍然要用工具拿到编号（见下面的引用规则）。
+ABSTRACT_RULES = """【首轮附带的论文摘要与档案背景】
+本次对话的**第一条**用户消息里会带上这篇论文的标题与摘要（原文摘要 + 中文摘要译文），
+同一段里还带着**论文档案背景**（篇幅、领域与主要论断、章节结构、统一译法）：
+- 它们只是**背景**：用来听懂用户在问什么、该去检索什么、该往哪一章找。它们**没有 [ref] 编号**，
+  所以**不是可引用的材料** —— 回答里的论断仍然要用工具拿到编号（见下面的引用规则）。
+- 背景是系统**自动注入**的，**不要**为了同一份内容再调 `paper_archive_get`。
 - 用户只是问"这篇大概讲了什么 / 值不值得读"这类概览问题时，可以依据摘要作答，
   但要说清这是摘要里的内容，不要说得像你读过正文。
 - 只有第一条消息带着它；后面几轮它在历史里，**不必**再为了背景去调档案。"""
@@ -348,10 +354,10 @@ def build_instructions(deps: Deps) -> str:
     每次调用现拼、只拼一次：不写进任何会被累加的字段 —— 跨轮累加就是把同一段要求
     叠第 N 遍，既费 token 又会让模型越来越看重它、压过规则。
 
-    ⚠️ **不预注入论文档案**（用户口径 2026-10-07："agent 不需要每轮预读材料"）：
-    档案（领域/主要论断/术语表/章节结构）以前每轮拼在 system 里当"背景材料"，现在改成
-    **模型按需调 `paper_archive_get` 去拿** —— 前文里看过就不再调，不看的轮次一个 token 都不花。
-    （**只有摘要**是例外，而且它走首轮的用户消息，见 `abstract_block`。）
+    ⚠️ **档案只在首轮注入一次，且不进 system**：档案（标题/篇幅/章节结构/领域与主要论断/
+    统一译法）不再每轮拼进 system，也不指望模型自己去调 `paper_archive_get` —— 它在
+    **首轮**被注入进第一条用户消息（`archive_background` / `runtime._inject_archive`），
+    从第 2 轮起就坐在历史（= 缓存前缀内部），不再重复注入。摘要同理（`abstract_block`）。
 
     ⚠️ **对同一篇论文必须逐字节稳定**：system 在请求最前面，前缀缓存从第 0 个 token 起比 ——
     这里变一个字节，`system + 全部历史` 就都按未命中算。所以这一串只放"这篇论文 / 这次部署
@@ -378,7 +384,8 @@ def build_instructions(deps: Deps) -> str:
 def turn_notes(deps: Deps) -> str:
     """**这一轮**的备注（拼在用户消息开头，不进 system）。
 
-    两段：**首轮的论文摘要**（`abstract_block`，只有第一条消息有）+ `【本轮备注】`
+    三段：**首轮的论文摘要**（`abstract_block`）+ **首轮自动注入的档案背景**
+    （`archive_background`，两者都只有第一条消息有）+ `【本轮备注】`
     （选区原文/编号/页号、图片张数 —— 每轮都可能不同）。
 
     放在最后一条用户消息里，前面那一大段（system + 历史）才缓存得住；
@@ -388,6 +395,9 @@ def turn_notes(deps: Deps) -> str:
     head = abstract_block(deps)
     if head:
         parts.append(head)
+    background = archive_background(deps)     # 首轮才有；第 2 轮起它在历史里
+    if background:
+        parts.append(background)
     items: list[str] = []
     if deps.selection:
         items.append(selection_block(deps))
@@ -449,7 +459,8 @@ def _same_symbol_title(node: dict) -> bool:
     return bool(en) and en == zh and ("$" in en or "\\" in en)
 
 def archive_block(cfg_chars: int, brief: dict, outline: list[dict], *,
-                  title: str, page_total: int) -> str:
+                  title: str, page_total: int,
+                  header: str = "【论文档案（本轮的背景材料）】") -> str:
     """把论文档案渲染成**注入用**的稳定文本块。
 
     ⚠️ 与 `translation/brief.py` 的 `prompt_block()` **刻意分开**：那个块是翻译提示词的前缀，
@@ -463,7 +474,7 @@ def archive_block(cfg_chars: int, brief: dict, outline: list[dict], *,
     #: 24 条按现在的缩进格式只有几百字符，稳落得下。
     struct_chars = min(2000, total // 3)
 
-    head: list[str] = ["【论文档案（本轮的背景材料）】"]
+    head: list[str] = [header]
     if title:
         head.append(f"标题：{title}")
     if page_total:
@@ -537,6 +548,30 @@ def _finish(fixed: str, rest: list[str], truncated: bool) -> str:
     text = "\n".join([fixed, *rest]) if rest else fixed
     # 标记只在**可选字段真被截**时加：否则模型会以为"章节结构也被切了"
     return text + ("\n…（档案过长已截断）" if truncated else "")
+
+
+#: 首轮**注入**用的小标题：与工具返回的那份档案（"本轮的背景材料"）分开说，
+#: 否则模型会以为"每轮都会刷新一份"，第 2 轮发现历史里还是那一份时会重新去调工具。
+ARCHIVE_INJECT_HEADER = "【论文背景（首轮自动注入，只这一次；没有编号、不能引用）】"
+
+
+def archive_background(deps: Deps) -> str:
+    """**首轮**自动注入的论文档案背景（拼进第一条用户消息，不进 system）。
+
+    内容由 `runtime._inject_archive` 用**宿主已经取到的那一份档案**渲染好（`archive_block`
+    —— 标题 / 篇幅 / 章节结构 / 领域与主要论断 / 统一译法，截断规则与工具那份完全一致），
+    这里只负责"什么时候算数"：**首轮**，且注入过的就是**这篇论文**
+    （`deps.archive_injected` 存 paper_id：换论文才重新注入，同一次 deps 里幂等）。
+
+    为什么走用户消息：只有首轮才有的东西放进 system，第 2 轮"system + 全部历史"整段前缀
+    缓存作废；放进首轮的用户消息，它从第 2 轮起就在缓存前缀**内部**，一分钱不多花。
+    """
+    if not deps.first_turn:
+        return ""
+    text = (deps.archive_text or "").strip()
+    if not text or deps.archive_injected != deps.paper_id:
+        return ""
+    return text
 
 
 # --------------------------------------------------------------------------

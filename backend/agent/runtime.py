@@ -409,14 +409,15 @@ class AgentRuntime:
             deps.attachments_shown = min(len(req.attachments), inline)
         state = RunState()
         try:
-            # 档案**不再预注入**（用户口径 2026-10-07："agent 不需要每轮预读材料"）：
-            # 模型要背景就自己调 `paper_archive_get`。这里仍然问一次宿主，但只为两件与提示词无关的事：
-            # ① 页数（工具解析 "3-8" / "all" 要用，拿不到也能按需补）；
-            # ② `content_source` 这个事件字段（前端不用它，留给自检/排查看）。
-            archive = await self.host.archive(req.paper_id)
+            # 档案**首轮自动注入一次**（用户口径 2026-12-11 改回来）：新会话的**第一次**模型
+            # 调用之前就把真实档案数据放到位，而不是等模型"按需调工具去取"（概览类问题不必先花
+            # 一轮检索）。仍然**只注入一次**、并且走**用户消息**（`prompts.archive_background`）：
+            # 只有首轮才有的东西放进 system，第 2 轮"system + 全部历史"整段前缀缓存就作废。
+            # 这一次问宿主还顺手带出页数（工具解析 "3-8" / "all" 要用）与 `content_source` 事件字段。
+            archive = await self._fetch_archive(req.paper_id)
             deps.title = str(archive.get("title") or "")
             deps.page_total = int(archive.get("page_total") or 0)
-            log.debug("论文档案就绪（首轮附摘要；档案本身仍不预注入）：%s %d 页",
+            log.debug("论文档案就绪（首轮注入一次背景，第 2 轮起在历史里）：%s %d 页",
                       deps.title[:40], deps.page_total)
 
             # 这条会话冻结的风格（主后端按会话行带来）：设置页的改动只影响**新建**的会话。
@@ -433,6 +434,10 @@ class AgentRuntime:
             meta = archive.get("meta") or {}
             deps.abstract_en = str(meta.get("abstract") or "").strip()
             deps.abstract_zh = str(meta.get("abstract_zh") or "").strip()
+
+            # **首轮自动注入档案背景**（只这一次）：数据复用上面那一份 `archive`，不再多打一次
+            # HTTP；渲染结果落在 deps 上，由 `prompts.turn_notes` 拼进**第一条**用户消息。
+            self._inject_archive(deps, archive)
 
             # 划词提问：把选区所在的块登记成 ref，模型就能自己展开上下文（见 prompts.SELECTION）
             if req.selection:
@@ -813,6 +818,65 @@ class AgentRuntime:
             except Exception:  # noqa: BLE001
                 pass
         return []
+
+    async def _fetch_archive(self, paper_id: str) -> dict:
+        """问宿主取一次档案；**失败不致命**（背景少了而已，这一轮问答照常进模型）。
+
+        为什么不让它抛到 `ask()` 外面：档案只是背景，取不到时正确答案是"不注入、照常答"，
+        而不是整轮 500（宿主抖动一下就把用户的问题吞掉，比少一段背景坏得多）。
+        """
+        try:
+            return await self.host.archive(paper_id) or {}
+        except Exception as exc:  # noqa: BLE001
+            log.info("论文档案取不到（本轮不注入背景，问答照常）：%s", exc)
+            return {}
+
+    def _inject_archive(self, deps: Deps, archive: dict) -> str:
+        """把**已经取到**的论文档案渲染成"首轮背景块"，记在 deps 上（同一份 deps 里幂等）。
+
+        为什么在这里而不是在 `prompts.turn_notes` 里现取：取档案是一次 HTTP，
+        每轮都做一遍既慢又把"档案"变成每轮都变的输入；这里只在**首轮**渲染一次，
+        `prompts.archive_background` 之后只是把 deps 上那份文本拼进第一条用户消息。
+
+        判据（都满足才注入）：
+        - `deps.first_turn`：只有第一条消息带它 —— 第 2 轮起它已经在历史（缓存前缀）里；
+        - `deps.paper_id` 非空：没有论文就没有档案；
+        - `deps.archive_injected != paper_id`：**同一篇论文只注入一次**；
+          换论文（`paper_id` 变了）才重新注入，且**绝不沿用**上一份文本。
+        降级（不抛错、问答照常）：档案为空 / 渲染不出实质内容 → 返回空串。
+        """
+        if not deps.first_turn:
+            return ""
+        paper_id = str(deps.paper_id or "")
+        if not paper_id:
+            return ""
+        if deps.archive_injected == paper_id and deps.archive_text:
+            return deps.archive_text
+
+        data = archive or {}
+        brief = data.get("brief") or {}
+        outline = data.get("outline") or []
+        page_total = deps.page_total or int(data.get("page_total") or 0)
+        # "档案为空"也算降级：只剩一行小标题的背景块没有信息，还会让模型以为档案读到了
+        if not (deps.title or page_total or brief.get("domain") or brief.get("key_claims")
+                or brief.get("glossary") or brief.get("keep_as_is") or outline):
+            log.info("论文档案为空（%s）：本轮不注入背景，问答照常", paper_id)
+            return ""
+
+        text = prompts.archive_block(
+            int(getattr(self.cfg, "archive_chars", 0) or 6000),
+            brief, outline,
+            title=deps.title or str(data.get("title") or ""),
+            page_total=page_total,
+            header=prompts.ARCHIVE_INJECT_HEADER).strip()
+        if not text:
+            log.info("论文档案渲染为空（%s）：本轮不注入背景，问答照常", paper_id)
+            return ""
+        # 文本与标记**成对**更新：只写一个会让 `archive_background` 把上一篇的背景交给这一轮
+        deps.archive_text = text
+        deps.archive_injected = paper_id
+        log.info("论文档案首轮注入：%s（%d 字符）", paper_id, len(text))
+        return text
 
     async def _user_prompt(self, req: AskRequest, deps: Deps):
         """本轮的 user prompt：纯文本，或``[文本, 图片…]``（多模态）。

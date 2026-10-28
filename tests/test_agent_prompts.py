@@ -182,15 +182,50 @@ def test_style_default_import_stays_light() -> None:
 
 
 def test_system_prompt_does_not_preload_the_archive() -> None:
-    """**不预注入论文档案**（用户口径 2026-10-07："agent 不需要每轮预读材料"）。
+    """档案**不进 system**，只在**首轮**注入进用户消息（2026-12 需求变更后的新口径）。
 
-    档案改成模型按需调 `paper_archive_get` 去拿：不看的轮次一个 token 都不花。
+    旧口径（2026-10-07）是"完全不预注入，模型自己按需调 `paper_archive_get`"；
+    现在改成"新会话第一次模型调用之前就把真实档案放到位"，但**只走首轮的用户消息**
+    （`prompts.archive_background` ← `runtime._inject_archive`）。
+    system 这边一点没变松：它是同一篇论文里**逐字节稳定**的前缀，只要随档案（字段/大小）
+    变一个字，第 2 轮"system + 全部历史"就整段按未命中算 —— 所以这里守三件事：
+    ① system 里**没有档案本体**（注入块的小标题、渲染出来的标题行、论断原文都不出现），
+       而且带不带档案，system 逐字节相同；
+    ② **首轮**的 `turn_notes` 里**有**那段背景（注入确实发生了，不是把能力悄悄删了）；
+    ③ **非首轮**、以及**换了论文**时 `turn_notes` 里**没有**。
     """
-    text = prompts.build_instructions(_deps())
-    assert "【论文档案" not in text
-    assert "主要论断" not in text and "章节结构" not in text
-    # 提示词里要**告诉它怎么拿**（否则就是单纯把能力删了）
+    brief = {"domain": "检索增强生成",
+             "key_claims": ["断言甲：旋转让误差均匀", "断言乙：误差有界"],
+             "glossary": {"random rotation": "随机旋转"}}
+    outline = [{"text": "1 INTRODUCTION", "text_zh": "1 引言", "level": 1},
+               {"text": "2 METHOD", "text_zh": "2 方法", "level": 1}]
+    # 一份"真实档案"渲染出来的注入块：标题行与正文都由渲染函数产出，不硬编码中文
+    injected = prompts.archive_block(6000, brief, outline, title="Demo Paper",
+                                     page_total=12, header=prompts.ARCHIVE_INJECT_HEADER)
+    head_line = injected.splitlines()[0]
+
+    # ① system 里没有档案本体，也不随档案变化（同一篇论文逐字节稳定）
+    plain = prompts.build_instructions(_deps())
+    first = _deps(first_turn=True, archive_text=injected, archive_injected="demo-paper")
+    text = prompts.build_instructions(first)
+    assert text == plain, "system 必须与档案无关：带不带档案都得逐字节相同"
+    assert prompts.ARCHIVE_INJECT_HEADER not in text
+    assert head_line not in text and injected not in text
+    assert "断言甲：旋转让误差均匀" not in text
+    # 提示词里仍然**告诉它档案工具在那儿**（换论文 / 要注入里没有的字段时才调）
     assert "paper_archive_get" in text
+
+    # ② 首轮：注入发生在**用户消息**（turn_notes）里
+    notes = prompts.turn_notes(first)
+    assert injected.strip() in notes
+    assert head_line in notes and "断言甲：旋转让误差均匀" in notes
+
+    # ③ 非首轮：同一份 deps 把 first_turn 关掉就不再注入（第 2 轮起它在历史里）
+    later = _deps(first_turn=False, archive_text=injected, archive_injected="demo-paper")
+    assert prompts.turn_notes(later) == ""
+    # 换了论文（已注入的 paper_id 不是这一篇）也不拿旧的那份顶上
+    other = _deps(first_turn=True, archive_text=injected, archive_injected="another-paper")
+    assert prompts.turn_notes(other) == ""
 
     # 工具那一侧：档案工具在挂载清单里，而且明确写着"不是可引用的材料"
     from backend.agent import tools as agent_tools

@@ -152,6 +152,14 @@ class Deps:
     #: 它不是可引用的材料（没有 [ref]），规则常驻在 system 的 `ABSTRACT_RULES` 里。
     abstract_en: str = ""
     abstract_zh: str = ""
+    #: **首轮自动注入的论文背景**（标题 / 篇幅 / 领域与主要论断 / 章节结构 / 统一译法），
+    #: 已经由 `runtime._inject_archive` 用**宿主已取到的档案**渲染好（`prompts.archive_block`），
+    #: `prompts.turn_notes` 把它拼进**第一条**用户消息。为什么不进 system：只有首轮才有的东西
+    #: 放进 system，第 2 轮"system + 全部历史"整段前缀缓存就作废了。
+    archive_text: str = ""
+    #: **已注入过档案的 `paper_id`**（幂等标记）：同一份 deps 里"同一篇论文只注入一次"，
+    #: 换论文（`paper_id` 变了）才会重新注入。空串 = 这次 deps 还没注入过。
+    archive_injected: str = ""
     #: 划词解释：用户选中的原文 + 它对应的 ref（ref 用来让模型自己展开上下文）
     selection: str = ""
     #: 本轮用户上传的图片张数 / 其中真正随消息发出去的那几张（见 `prompts.IMAGE_NOTE`）
@@ -178,6 +186,10 @@ class Deps:
     #: 检索命中的**行跨度**（首行 id → 这个 chunk 覆盖的整串行 id）：`block_get` 展开跨多行的
     #: chunk 时要拼整段，而 `Citation` 里只存了首行（前端契约不动，别塞进引用表）。
     row_spans: dict[str, list[str]] = field(default_factory=dict)
+    #: `row_spans` 里每一条**属于哪篇论文**（只有跨论文读（`paper_id=…`）才写得进东西）：
+    #: 行 id（`p021-06`）每篇论文都长得一样，不记来源的话 `block_get` 拼一段时会把
+    #: 另一篇的同名行接进来 —— 那就是"引用了 A 的编号、给的是 B 的正文"。
+    row_span_paper: dict[str, str] = field(default_factory=dict)
     #: 本轮检索次数（**纯记账**：检索预算 2026-11-26 已取消，只剩统计与自检在读它）
     search_calls: int = 0
     #: 本轮改动次数（高亮 / 笔记 / 页级产物都算，同样只是记账 —— 改动预算已取消）

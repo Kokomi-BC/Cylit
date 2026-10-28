@@ -53,7 +53,20 @@ def _prefs(**prefs) -> Deps:
 
 
 def _golden() -> str:
-    return GOLDEN.read_text(encoding="utf-8")
+    """读 golden，并**先确认它与 prompts.BASE 还是同一代**。
+
+    为什么要这句：这里好几个用例靠 `text.split(prompts.BASE, 1)` 把 system 切成
+    "BASE 之前 / BASE 之后"两段来比对。一旦有人改了 BASE 却没刷新 golden，
+    split 只会得到 1 段 → 报 IndexError（"list index out of range"），
+    看起来像解析逻辑坏了，实际是"golden 过期"。这句把失败形态换成一句人话
+    （用户 2026-12 的背景注入改动就是这么更新 golden 的，见 dev-log）。
+    """
+    text = GOLDEN.read_text(encoding="utf-8")
+    assert prompts.BASE in text, (
+        "golden 与 prompts.BASE 不同代：BASE 改过而 tests/golden/agent_system_default.txt "
+        "没刷新，所以按 BASE 切段的比对会 IndexError。请按新 BASE 重新生成 golden，"
+        "并逐 hunk 确认改动都归因于这一次有意修改。")
+    return text
 
 
 # --------------------------------------------------------------------------
