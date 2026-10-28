@@ -17210,3 +17210,63 @@ prod 真模型两轮（同一会话：先读 attention-cleanroom 第 3 页 → �
   已换成链接的裂图在 v-html 重建后会短暂变回 `<img>`，若再失败会再换一次（结果一致，可能闪一帧）。
 - 工具/思考段的 lead 文本与会话列表预览里的图不加固（只在 `.md body` 回答区调用）。
 - 没做站外图的服务端代理/缓存（那属于另一件事）。
+
+# 264 · 站外配图落服务器（/api/v1/webimg）、流式不再推原图 markdown、加固扩到笔记预览（2026-12-28 追补九）
+
+263 把配图放开到「任意 https」之后留下三条尾巴，用户要求收尾。
+
+## 一、站外图落服务器（代理 + 磁盘缓存）
+
+新 `backend/services/webimg.py` + `backend/api/webimg.py`：`GET /api/v1/webimg?url=<percent-encoded>`
+命中磁盘直接 `FileResponse`（`immutable` + `nosniff`，SVG 另加 `CSP: sandbox`），没有就抓一次落
+`<data_dir>/cache/webimg/<sha256(url)>.<ext>`（`.part` 原子 rename），目录超 500MB 按 mtime 淘汰最旧。
+
+**SSRF 五层**（这是本轮唯一有安全面的东西：一个能抓任意 URL 的公共端点不管私网，就等于把内网暴露出去）——
+只收 https；抓前 DNS 解析并拒私网（回环 / 10-8 / 172.16/12 / 192.168/16 / 169.254/16 / fc00::/7 /
+fe80::/10 / 组播 / 保留，IPv4-mapped 单独判）；**每一跳重定向都重新校验**（302 到内网时第二跳根本不发出去）；
+超时 8s、响应体 ≤8MB（流式累计超限即断）；`Content-Type` 必须 `image/*` **且魔数对得上**。
+失败各自带 reason + 状态码（not-https/private 400、not-image 415、too-large 413、timeout 504、unreachable 502），
+上游原始错误不外泄。
+
+清洗器（`strip_foreign_images`）随之改口径：站外 https → 改写成代理地址（整条 URL 全转义，不撑破 markdown 括号）；
+本站受控图（任意论文）**不代理**；`http` 仍降级成链接；`data:/blob:/javascript:/file:` 仍整条删。
+
+## 二、流式不再先推原始图片 markdown
+
+`StreamingAnswerSanitizer` 新增显示轨：已成形的图片 markdown 就地换成 alt，半个片段用 `_hold_from` 挡住不外推
+（前缀只增不退，有逐字喂入的单调性测试）。`clean`（最终答案）仍取 `_raw`，所以**最终答案里的图一个不少**。
+代价：带图回答的「流式增量拼接 == done.answer」不再逐字成立 —— 有意为之，类 docstring 写明，别再想着对齐回去。
+
+## 三、前端加固扩到 lead 文本与笔记预览
+
+`watchAnswerImages(root, selectors)` 支持多容器（数组 / null = 容器内全部），`hostOf` 统一三条路径；
+`ReaderChat` 在消息容器上**一个**观察器覆盖 `.md` 与新增的 `.md-lead`；`ReaderSidePanel`、`NotesView` 各在
+面板/页面根上挂一个 `['.md', '.clamp2']`（v-for 整批换掉不重挂，由同一个 MutationObserver 接住）。
+裂图降级出的链接现在 `stopPropagation`（不顺手折叠轨迹行）、`.clamp1/.clamp2` 里不追加提示、
+并新增 `originalOf()`：链接指回**第三方原地址**（代理地址再点还是同一个失败），只有用户主动点才出去。
+
+## 实测
+
+```
+全量 pytest：2005 passed / 0 failed（新增 test_webimg.py 27 例全离线 + 图片清洗 21 例）
+前端：vue-tsc + build 绿；frontend_check.py 169 项全过（与全量 pytest 并行跑时出现过 2 条面板超时的假红，空跑复测 169/169）
+
+prod 代理（真网络、真磁盘）：
+  https://www.w3.org/Icons/w3c_home.png → 第一次 200 image/png 1848 B 1.13s，落盘 a6c475e7….png
+                                         第二次 200 1848 B 0.007s（缓存命中，不联网），Cache-Control: immutable
+  SSRF：http://example.com/a.png 400 / https://127.0.0.1/a.png 400 / https://169.254.169.254/… 400
+
+prod 同进程内跑真实清洗链路（结论不靠猜）：
+  流式显示轨：有没有 ![ = False；alt 三条都在（另一篇的 Figure 1 / 架构图 / 旧图）
+  最终答案：受控跨篇图 → 原样保留 /api/v1/papers/attention-cleanroom/figures/region/3/0?v=…
+            站外 https     → 改写成 /api/v1/webimg?url=https%3A%2F%2Fwww.w3.org%2FIcons%2Fw3c_home.png
+            http           → [旧图](http://example.com/x.png)（链接，不是图）
+```
+
+## 代价与遗留
+
+- SVG 没做脚本净化（靠 `<img>` 不执行脚本 + 响应头 CSP sandbox 兜住；要更狠就遇到 script/onload 整张拒绝）。
+- 超大图只按字节（8MB）不按像素，解码炸弹由浏览器承担；要补就在落盘前用 Pillow 限制 MAX_IMAGE_PIXELS。
+- 淘汰是 mtime FIFO；url 参数没有长度上限（可被用来刷缓存键）；同图不同 query 各存一份。
+- DNS 解析与真正连接是两次动作（TOCTOU），彻底固定 IP 要自建 transport（模块 docstring 已写明）。
+- 另一处已知：`figure_image_get` 之类工具若直接回图像块（而不是 URL），模型未必会嵌 markdown —— 模型行为，不属本轮。
