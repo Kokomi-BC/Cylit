@@ -213,51 +213,22 @@ const fileInput = ref<HTMLInputElement | null>(null);
  *
  *  没收录的外部技能排在最后，并保持接口给的相对顺序。
  *  **只排副本**：开关的乐观更新、上传后的回填都直接动 skills，就地 sort 会打乱那份引用。 */
-/** 三段分组：顺序与上面那句注释一一对应。
+/** 排序用的名字表：三段顺序与上面那句注释一一对应。
  *
- * 为什么把分组从注释搬进界面（用户口径 2026-12「补齐技能开关及说明」）：十几行平铺时，
- * 「联网搜索」和「标注与笔记」看起来是同一类东西 —— 分组 + 一句「这一段在干什么」
- * 才说得清每个开关管的是哪一类能力。**只写分组在干什么，不写单个技能的能力**：
- * 单个技能的说明只能来自 SKILL.md（见下面那条警告）。
- * 分类标题后来按用户口径移除（2026-12）：「移除技能分类的标题」—— 每段只剩那说明句。 */
-const SKILL_GROUPS: { title: string; note: string; names: string[] }[] = [
-  {
-    title: '联网取外援',
-    note: '论文之外的公开信息：先搜到候选，再按链接读正文。',
-    names: ['web-search', 'web-fetch'],
-  },
-  {
-    title: '怎么读、怎么答',
-    note: '先定位再取证：检索候选位置 → 看读者停在哪 → 整篇精读 → 跨段回答。',
-    names: ['search-paper', 'reader-state', 'deep-read-paper', 'answer-paper'],
-  },
-  {
-    title: '取材料与动手',
-    note: '把正文 / 原图 / 图表 / 公式取出来核对，需要时标注，或改页级产物。',
-    names: ['read-text', 'read-page-image', 'read-figure', 'read-formula',
-            'explain-term', 'annotate-text', 'edit-text'],
-  },
+ * 2026-12 起**只剩顺序**：分组标题与那句「这一段在干什么」都按用户口径删掉了
+ * （先「移除技能分类的标题」，再「一起删掉，列表就是纯技能行」）；按组合并的那个
+ * computed（skillGroups）一并删除，列表直接渲染排序后的 filteredSkills。 */
+const SKILL_ORDER: string[] = [
+  'web-search', 'web-fetch',
+  'search-paper', 'reader-state', 'deep-read-paper', 'answer-paper',
+  'read-text', 'read-page-image', 'read-figure', 'read-formula',
+  'explain-term', 'annotate-text', 'edit-text',
 ];
-const SKILL_ORDER = SKILL_GROUPS.flatMap((g) => g.names);
 function skillRank(name: string): number {
   const at = SKILL_ORDER.indexOf(name);
   return at < 0 ? SKILL_ORDER.length : at;
 }
 
-/** 过滤后的行按分组切开（没收录的外部技能自成一组，排在最后）。
- *  空组不渲染 —— 搜索「术语」时不该还挂着「联网取外援」这个空标题。 */
-const skillGroups = computed(() => {
-  const rows = filteredSkills.value;
-  const groups = SKILL_GROUPS.map((g) => ({
-    title: g.title, note: g.note,
-    rows: rows.filter((s) => g.names.includes(s.name)),
-  }));
-  const rest = rows.filter((s) => !SKILL_ORDER.includes(s.name));
-  if (rest.length) {
-    groups.push({ title: '外部技能', note: '你自己上传的：可下载、可卸载。', rows: rest });
-  }
-  return groups.filter((g) => g.rows.length);
-});
 const skillRows = computed<AgentSkill[]>(() =>
   skills.value.slice().sort((a, b) => skillRank(a.name) - skillRank(b.name)));
 
@@ -657,14 +628,9 @@ onMounted(() => {
         </label>
 
         <div class="skill-list" v-if="filteredSkills.length">
-          <!-- 按三段分组：**只留一句「这一段在干什么」，不摆分类标题**
-               （用户口径 2026-12：「移除技能分类的标题」—— 标题与每组第一行技能名
-               抢同一级的注意力，而分组真正有用的是那句说明）。行本身结构不变。 -->
-          <template v-for="g in skillGroups" :key="g.title">
-          <div class="skill-group" data-skill-group>
-            <span class="skill-group-note">{{ g.note }}</span>
-          </div>
-          <template v-for="s in g.rows" :key="s.name">
+          <!-- 纯技能行：**没有分类标题，也没有分组说明**（用户口径 2026-12：先「移除技能分类的标题」，
+               再「一起删掉，列表就是纯技能行」）。三段顺序还在（SKILL_ORDER），只是不再可视分组。 -->
+          <template v-for="s in filteredSkills" :key="s.name">
             <!-- 一条技能 = **横向两块**（用户口径 2026-12）：左边名字 / 英文 ID / 说明竖着排，
                  右边是操作区。说明因此不会把名字挤歪，操作区也不会被长说明顶走。 -->
             <div class="skill-item" :class="{ off: !s.enabled }"
@@ -718,7 +684,6 @@ onMounted(() => {
             <div v-if="s.name === WEB_SEARCH_SKILL && wsOpen" class="ws-panel">
               <WebSearchSettings />
             </div>
-          </template>
           </template>
         </div>
         <!-- 有技能但被搜索过滤光了：只说这件事，不谎称"目录是空的" -->
@@ -923,14 +888,7 @@ onMounted(() => {
 .skill-search input:focus { background: transparent; border: 0; box-shadow: none; }
 
 .skill-list { display: flex; flex-direction: column; }
-/* 分组之间只靠这一句说明分界（分类标题已移除）：它要顶得住「分段」的活，
-   所以给它一点上边距；第一组不留，免得和搜索框贴出一段空档。 */
-.skill-group {
-  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-  padding: 14px 2px 2px;
-}
-.skill-group:first-child { padding-top: 2px; }
-.skill-group-note { font-size: 12px; color: var(--text-faint); }
+/* 分组标题与分组说明都删了（2026-12）：列表就是一行行技能，条与条之间只留发丝线。 */
 /* 一条技能 = **横向两块**（用户口径 2026-12）：
    左 = 名字 / 英文 ID / 说明（竖着排、可换行），右 = 固定五格操作区。
    条本身不描边、不填底、不响应悬停；条与条之间只留一条发丝线。 */
